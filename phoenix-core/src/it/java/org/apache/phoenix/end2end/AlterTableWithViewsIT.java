@@ -19,7 +19,6 @@ package org.apache.phoenix.end2end;
 
 import static org.apache.phoenix.exception.SQLExceptionCode.CANNOT_MUTATE_TABLE;
 import static org.apache.phoenix.util.PhoenixRuntime.TENANT_ID_ATTRIB;
-import static org.apache.phoenix.util.TestUtil.TEST_PROPERTIES;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -33,7 +32,6 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Properties;
 
 import org.apache.commons.lang.ArrayUtils;
 import org.apache.hadoop.hbase.client.HTableInterface;
@@ -47,8 +45,6 @@ import org.apache.phoenix.schema.PNameFactory;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.schema.PTableKey;
 import org.apache.phoenix.schema.PTableType;
-import org.apache.phoenix.util.PropertiesUtil;
-import org.apache.phoenix.util.SchemaUtil;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -58,22 +54,41 @@ import org.junit.runners.Parameterized.Parameters;
 public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
     
     private final boolean isMultiTenant;
+    private final boolean columnEncoded;
     
     private final String TENANT_SPECIFIC_URL1 = getUrl() + ';' + TENANT_ID_ATTRIB + "=tenant1";
     private final String TENANT_SPECIFIC_URL2 = getUrl() + ';' + TENANT_ID_ATTRIB + "=tenant2";
     
-    public AlterTableWithViewsIT(boolean isMultiTenant) {
+    public AlterTableWithViewsIT(boolean isMultiTenant, boolean columnEncoded) {
         this.isMultiTenant = isMultiTenant;
+        this.columnEncoded = columnEncoded;
     }
     
-    @Parameters(name="AlterTableWithViewsIT_multiTenant={0}") // name is used by failsafe as file name in reports
-    public static Collection<Boolean> data() {
-        return Arrays.asList(false, true);
+    @Parameters(name="AlterTableWithViewsIT_multiTenant={0}, columnEncoded={1}") // name is used by failsafe as file name in reports
+    public static Collection<Boolean[]> data() {
+        return Arrays.asList(new Boolean[][] { 
+                { false, false }, { false, true },
+                { true, false }, { true, true } });
     }
     
     private String generateDDL(String format) {
+        return generateDDL("", format);
+    }
+    
+    private String generateDDL(String options, String format) {
+        StringBuilder optionsBuilder = new StringBuilder(options);
+        if (columnEncoded) {
+            if (optionsBuilder.length()!=0)
+                optionsBuilder.append(",");
+            optionsBuilder.append("COLUMN_ENCODED_BYTES=4");
+        }
+        if (isMultiTenant) {
+            if (optionsBuilder.length()!=0)
+                optionsBuilder.append(",");
+            optionsBuilder.append("MULTI_TENANT=true");
+        }
         return String.format(format, isMultiTenant ? "TENANT_ID VARCHAR NOT NULL, " : "",
-            isMultiTenant ? "TENANT_ID, " : "", isMultiTenant ? "MULTI_TENANT=true" : "");
+            isMultiTenant ? "TENANT_ID, " : "", optionsBuilder.toString());
     }
     
     @Test
@@ -96,7 +111,7 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
             
             // adding a new pk column and a new regular column
             conn.createStatement().execute("ALTER TABLE " + tableName + " ADD COL3 varchar(10) PRIMARY KEY, COL4 integer");
-            assertTableDefinition(conn, tableName, PTableType.TABLE, null, 2, 5, QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2", "COL3", "COL4");
+            assertTableDefinition(conn, tableName, PTableType.TABLE, null, columnEncoded ? 2 : 1, 5, QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2", "COL3", "COL4");
             assertTableDefinition(conn, viewOfTable, PTableType.VIEW, tableName, 1, 7, 5, "ID", "COL1", "COL2", "COL3", "COL4", "VIEW_COL1", "VIEW_COL2");
         } 
     }
@@ -113,28 +128,27 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
                             + " COL1 integer NOT NULL,"
                             + " COL2 bigint NOT NULL,"
                             + " CONSTRAINT NAME_PK PRIMARY KEY (%s ID, COL1, COL2)"
-                            + " ) UPDATE_CACHE_FREQUENCY=15 "
-                            + (isMultiTenant ? ",%s" : "%s");
-            conn.createStatement().execute(generateDDL(ddlFormat));
+                            + " ) %s ";
+            conn.createStatement().execute(generateDDL("UPDATE_CACHE_FREQUENCY=2", ddlFormat));
             viewConn.createStatement().execute("CREATE VIEW " + viewOfTable1 + " ( VIEW_COL1 DECIMAL(10,2), VIEW_COL2 VARCHAR ) AS SELECT * FROM " + tableName);
             viewConn.createStatement().execute("CREATE VIEW " + viewOfTable2 + " ( VIEW_COL1 DECIMAL(10,2), VIEW_COL2 VARCHAR ) AS SELECT * FROM " + tableName);
-            viewConn.createStatement().execute("ALTER VIEW " + viewOfTable2 + " SET UPDATE_CACHE_FREQUENCY = 5");
+            viewConn.createStatement().execute("ALTER VIEW " + viewOfTable2 + " SET UPDATE_CACHE_FREQUENCY = 1");
             
             PhoenixConnection phoenixConn = conn.unwrap(PhoenixConnection.class);
             PTable table = phoenixConn.getTable(new PTableKey(null, tableName));
             PName tenantId = isMultiTenant ? PNameFactory.newName("tenant1") : null;
             assertFalse(table.isImmutableRows());
-            assertEquals(15, table.getUpdateCacheFrequency());
+            assertEquals(2, table.getUpdateCacheFrequency());
             PTable viewTable1 = viewConn.unwrap(PhoenixConnection.class).getTable(new PTableKey(tenantId, viewOfTable1));
             assertFalse(viewTable1.isImmutableRows());
-            assertEquals(15, viewTable1.getUpdateCacheFrequency());
+            assertEquals(2, viewTable1.getUpdateCacheFrequency());
             // query the view to force the table cache to be updated
             viewConn.createStatement().execute("SELECT * FROM "+viewOfTable2);
             PTable viewTable2 = viewConn.unwrap(PhoenixConnection.class).getTable(new PTableKey(tenantId, viewOfTable2));
             assertFalse(viewTable2.isImmutableRows());
-            assertEquals(5, viewTable2.getUpdateCacheFrequency());
+            assertEquals(1, viewTable2.getUpdateCacheFrequency());
             
-            conn.createStatement().execute("ALTER TABLE " + tableName + " SET IMMUTABLE_ROWS=true, UPDATE_CACHE_FREQUENCY=10");
+            conn.createStatement().execute("ALTER TABLE " + tableName + " SET IMMUTABLE_ROWS=true, UPDATE_CACHE_FREQUENCY=3");
             // query the views to force the table cache to be updated
             viewConn.createStatement().execute("SELECT * FROM "+viewOfTable1);
             viewConn.createStatement().execute("SELECT * FROM "+viewOfTable2);
@@ -142,16 +156,16 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
             phoenixConn = conn.unwrap(PhoenixConnection.class);
             table = phoenixConn.getTable(new PTableKey(null, tableName));
             assertTrue(table.isImmutableRows());
-            assertEquals(10, table.getUpdateCacheFrequency());
+            assertEquals(3, table.getUpdateCacheFrequency());
             
             viewTable1 = viewConn.unwrap(PhoenixConnection.class).getTable(new PTableKey(tenantId, viewOfTable1));
             assertTrue(viewTable1.isImmutableRows());
-            assertEquals(10, viewTable1.getUpdateCacheFrequency());
+            assertEquals(3, viewTable1.getUpdateCacheFrequency());
             
             viewTable2 = viewConn.unwrap(PhoenixConnection.class).getTable(new PTableKey(tenantId, viewOfTable2));
             assertTrue(viewTable2.isImmutableRows());
             // update cache frequency is not propagated to the view since it was altered on the view
-            assertEquals(5, viewTable2.getUpdateCacheFrequency());
+            assertEquals(1, viewTable2.getUpdateCacheFrequency());
         } 
     }
     
@@ -178,7 +192,7 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
 
             // drop two columns from the base table
             conn.createStatement().execute("ALTER TABLE " + tableName + " DROP COLUMN COL3, COL5");
-            assertTableDefinition(conn, tableName, PTableType.TABLE, null, 2, 4,
+            assertTableDefinition(conn, tableName, PTableType.TABLE, null, columnEncoded ? 2 : 1, 4,
                 QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2", "COL4");
             assertTableDefinition(conn, viewOfTable, PTableType.VIEW, tableName, 1, 6, 4,
                 "ID", "COL1", "COL2", "COL4", "VIEW_COL1", "VIEW_COL2");
@@ -222,80 +236,84 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
             viewConn.commit();
             
             try {
-                // adding a key value column to the base table that already exists in the view is not allowed
-                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL4 DECIMAL, VIEW_COL2 VARCHAR(256)");
+                // should fail because there is already a view column with same name of different type
+                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL1 char(10)");
                 fail();
-            } catch (SQLException e) {
+            }
+            catch (SQLException e) {
+                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
+            }           
+            
+            try {
+                // should fail because there is already a view column with same name with different scale
+                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL1 DECIMAL(10,1)");
+                fail();
+            }
+            catch (SQLException e) {
+                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
+            } 
+            
+            try {
+                // should fail because there is already a view column with same name with different length
+                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL1 DECIMAL(9,2)");
+                fail();
+            }
+            catch (SQLException e) {
+                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
+            } 
+            
+            try {
+                // should fail because there is already a view column with different length
+                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL2 VARCHAR");
+                fail();
+            }
+            catch (SQLException e) {
                 assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
             }
-//            try {
-//                // should fail because there is already a view column with same name of different type
-//                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL1 char(10)");
-//                fail();
-//            }
-//            catch (SQLException e) {
-//                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
-//            }           
-//            
-//            try {
-//                // should fail because there is already a view column with same name with different scale
-//                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL1 DECIMAL(10,1)");
-//                fail();
-//            }
-//            catch (SQLException e) {
-//                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
-//            } 
-//            
-//            try {
-//                // should fail because there is already a view column with same name with different length
-//                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL1 DECIMAL(9,2)");
-//                fail();
-//            }
-//            catch (SQLException e) {
-//                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
-//            } 
-//            
-//            try {
-//                // should fail because there is already a view column with different length
-//                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL2 VARCHAR");
-//                fail();
-//            }
-//            catch (SQLException e) {
-//                assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
-//            }
-//            
-//            // validate that there were no columns added to the table or view
-//            assertTableDefinition(conn, tableName, PTableType.TABLE, null, 1, 3, QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2");
-//            assertTableDefinition(conn, viewOfTable, PTableType.VIEW, tableName, 0, 9, 3, "ID", "COL1", "COL2", "VIEW_COL1", "VIEW_COL2", "VIEW_COL3", "VIEW_COL4", "VIEW_COL5", "VIEW_COL6");
-//            
-//            // should succeed 
-//            conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL4 DECIMAL, VIEW_COL2 VARCHAR(256)");
-//            assertTableDefinition(conn, tableName, PTableType.TABLE, null, 2, 5, QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2", "VIEW_COL4", "VIEW_COL2");
-//            assertTableDefinition(conn, viewOfTable, PTableType.VIEW, tableName, 1, 9, 5, "ID", "COL1", "COL2", "VIEW_COL4", "VIEW_COL2", "VIEW_COL1", "VIEW_COL3", "VIEW_COL5", "VIEW_COL6");
-//            
-//            // query table
-//            ResultSet rs = stmt.executeQuery("SELECT * FROM " + tableName);
-//            assertTrue(rs.next());
-//            assertEquals("view1", rs.getString("ID"));
-//            assertEquals(12, rs.getInt("COL1"));
-//            assertEquals(13, rs.getInt("COL2"));
-//            assertEquals("view5", rs.getString("VIEW_COL2"));
-//            assertEquals(17, rs.getInt("VIEW_COL4"));
-//            assertFalse(rs.next());
-//
-//            // query view
-//            rs = stmt.executeQuery("SELECT * FROM " + viewOfTable);
-//            assertTrue(rs.next());
-//            assertEquals("view1", rs.getString("ID"));
-//            assertEquals(12, rs.getInt("COL1"));
-//            assertEquals(13, rs.getInt("COL2"));
-//            assertEquals(14, rs.getInt("VIEW_COL1"));
-//            assertEquals("view5", rs.getString("VIEW_COL2"));
-//            assertEquals("view6", rs.getString("VIEW_COL3"));
-//            assertEquals(17, rs.getInt("VIEW_COL4"));
-//            assertEquals(18, rs.getInt("VIEW_COL5"));
-//            assertEquals("view9", rs.getString("VIEW_COL6"));
-//            assertFalse(rs.next());
+            
+            // validate that there were no columns added to the table or view, if its table is column encoded the sequence number changes when we increment the cq counter
+            assertTableDefinition(conn, tableName, PTableType.TABLE, null, columnEncoded ? 1 : 0, 3, QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2");
+            assertTableDefinition(conn, viewOfTable, PTableType.VIEW, tableName, 0, 9, 3, "ID", "COL1", "COL2", "VIEW_COL1", "VIEW_COL2", "VIEW_COL3", "VIEW_COL4", "VIEW_COL5", "VIEW_COL6");
+            
+            if (columnEncoded) {
+                try {
+                    // adding a key value column to the base table that already exists in the view is not allowed
+                    conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL4 DECIMAL, VIEW_COL2 VARCHAR(256)");
+                    fail();
+                } catch (SQLException e) {
+                    assertEquals("Unexpected exception", CANNOT_MUTATE_TABLE.getErrorCode(), e.getErrorCode());
+                }
+            }
+            else {
+                // should succeed 
+                conn.createStatement().execute("ALTER TABLE " + tableName + " ADD VIEW_COL4 DECIMAL, VIEW_COL2 VARCHAR(256)");
+                assertTableDefinition(conn, tableName, PTableType.TABLE, null, columnEncoded ? 2 : 1, 5, QueryConstants.BASE_TABLE_BASE_COLUMN_COUNT, "ID", "COL1", "COL2", "VIEW_COL4", "VIEW_COL2");
+                assertTableDefinition(conn, viewOfTable, PTableType.VIEW, tableName, 1, 9, 5, "ID", "COL1", "COL2", "VIEW_COL4", "VIEW_COL2", "VIEW_COL1", "VIEW_COL3", "VIEW_COL5", "VIEW_COL6");
+            
+                // query table
+                ResultSet rs = stmt.executeQuery("SELECT * FROM " + tableName);
+                assertTrue(rs.next());
+                assertEquals("view1", rs.getString("ID"));
+                assertEquals(12, rs.getInt("COL1"));
+                assertEquals(13, rs.getInt("COL2"));
+                assertEquals("view5", rs.getString("VIEW_COL2"));
+                assertEquals(17, rs.getInt("VIEW_COL4"));
+                assertFalse(rs.next());
+    
+                // query view
+                rs = stmt.executeQuery("SELECT * FROM " + viewOfTable);
+                assertTrue(rs.next());
+                assertEquals("view1", rs.getString("ID"));
+                assertEquals(12, rs.getInt("COL1"));
+                assertEquals(13, rs.getInt("COL2"));
+                assertEquals(14, rs.getInt("VIEW_COL1"));
+                assertEquals("view5", rs.getString("VIEW_COL2"));
+                assertEquals("view6", rs.getString("VIEW_COL3"));
+                assertEquals(17, rs.getInt("VIEW_COL4"));
+                assertEquals(18, rs.getInt("VIEW_COL5"));
+                assertEquals("view9", rs.getString("VIEW_COL6"));
+                assertFalse(rs.next());
+            }
         } 
     }
     
@@ -614,9 +632,9 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
     
     @Test
     public void testAlteringViewThatHasChildViews() throws Exception {
-        String baseTable = "testAlteringViewThatHasChildViews";
-        String childView = "childView";
-        String grandChildView = "grandChildView";
+        String baseTable = generateUniqueName();
+        String childView = baseTable + "cildView";
+        String grandChildView = baseTable + "grandChildView";
         try (Connection conn = DriverManager.getConnection(getUrl());
                 Connection viewConn = isMultiTenant ? DriverManager.getConnection(TENANT_SPECIFIC_URL1) : conn ) {
             String ddlFormat = "CREATE TABLE IF NOT EXISTS " + baseTable + "  ("

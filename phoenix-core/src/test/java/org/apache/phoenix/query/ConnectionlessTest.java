@@ -95,8 +95,8 @@ public class ConnectionlessTest {
         "    entity_history_id char(12) not null,\n" + 
         "    created_by varchar,\n" + 
         "    created_date date\n" +
-        "    CONSTRAINT pk PRIMARY KEY (organization_id, key_prefix, entity_history_id) ) " +
-        (saltBuckets == null ? "" : (PhoenixDatabaseMetaData.SALT_BUCKETS + "=" + saltBuckets));
+        "    CONSTRAINT pk PRIMARY KEY (organization_id, key_prefix, entity_history_id) ) COLUMN_ENCODED_BYTES=4 " +
+        (saltBuckets == null ? "" : " , " + (PhoenixDatabaseMetaData.SALT_BUCKETS + "=" + saltBuckets));
         Properties props = new Properties();
         Connection conn = DriverManager.getConnection(getUrl(), props);
         PreparedStatement statement = conn.prepareStatement(dmlStmt);

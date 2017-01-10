@@ -306,6 +306,9 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData {
     public static final byte[] SYSTEM_MUTEX_NAME_BYTES = Bytes.toBytes(SYSTEM_MUTEX_NAME);
     public static final byte[] SYSTEM_MUTEX_FAMILY_NAME_BYTES = TABLE_FAMILY_BYTES;
     
+    public static final String COLUMN_ENCODED_BYTES = "COLUMN_ENCODED_BYTES";
+    public static final byte[] COLUMN_ENCODED_BYTES_BYTES = Bytes.toBytes(COLUMN_ENCODED_BYTES);
+    
     private final PhoenixConnection connection;
     private final ResultSet emptyResultSet;
     public static final int MAX_LOCAL_SI_VERSION_DISALLOW = VersionUtil.encodeVersion("0", "98", "8");

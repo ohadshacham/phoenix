@@ -74,6 +74,7 @@ import org.apache.phoenix.compile.StatementContext;
 import org.apache.phoenix.coprocessor.generated.MetaDataProtos.ClearCacheRequest;
 import org.apache.phoenix.coprocessor.generated.MetaDataProtos.ClearCacheResponse;
 import org.apache.phoenix.coprocessor.generated.MetaDataProtos.MetaDataService;
+import org.apache.phoenix.execute.MutationState;
 import org.apache.phoenix.expression.AndExpression;
 import org.apache.phoenix.expression.ByteBasedLikeExpression;
 import org.apache.phoenix.expression.ComparisonExpression;
@@ -108,6 +109,7 @@ import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PLongColumn;
 import org.apache.phoenix.schema.PName;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTableKey;
 import org.apache.phoenix.schema.RowKeyValueAccessor;
 import org.apache.phoenix.schema.SortOrder;
 import org.apache.phoenix.schema.TableRef;
@@ -769,15 +771,26 @@ public class TestUtil {
     
         // We simply write a marker row, request a major compaction, and then wait until the marker
         // row is gone
+        PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
+        PTable table = pconn.getTable(new PTableKey(pconn.getTenantId(), tableName));
         ConnectionQueryServices services = conn.unwrap(PhoenixConnection.class).getQueryServices();
-        try (HTableInterface htable = services.getTable(Bytes.toBytes(tableName))) {
+        MutationState mutationState = pconn.getMutationState();
+        if (table.isTransactional()) {
+            mutationState.startTransaction();
+        }
+        try (HTableInterface htable = mutationState.getHTable(table)) {
             byte[] markerRowKey = Bytes.toBytes("TO_DELETE");
-        
+           
             Put put = new Put(markerRowKey);
-            put.add(QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES, HConstants.EMPTY_BYTE_ARRAY,
-                    HConstants.EMPTY_BYTE_ARRAY);
+            put.add(QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES, QueryConstants.EMPTY_COLUMN_VALUE_BYTES, QueryConstants.EMPTY_COLUMN_VALUE_BYTES);
             htable.put(put);
-            htable.delete(new Delete(markerRowKey));
+            Delete delete = new Delete(markerRowKey);
+            delete.deleteColumn(QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES, QueryConstants.EMPTY_COLUMN_VALUE_BYTES);
+            htable.delete(delete);
+            htable.close();
+            if (table.isTransactional()) {
+                mutationState.commit();
+            }
         
             HBaseAdmin hbaseAdmin = services.getAdmin();
             hbaseAdmin.flush(tableName);
@@ -786,19 +799,28 @@ public class TestUtil {
         
             boolean compactionDone = false;
             while (!compactionDone) {
-                Thread.sleep(2000L);
+                Thread.sleep(6000L);
                 Scan scan = new Scan();
                 scan.setStartRow(markerRowKey);
                 scan.setStopRow(Bytes.add(markerRowKey, new byte[] { 0 }));
                 scan.setRaw(true);
         
-                ResultScanner scanner = htable.getScanner(scan);
-                List<Result> results = Lists.newArrayList(scanner);
-                LOG.info("Results: " + results);
-                compactionDone = results.isEmpty();
-                scanner.close();
-        
+                try (HTableInterface htableForRawScan = services.getTable(Bytes.toBytes(tableName))) {
+                    ResultScanner scanner = htableForRawScan.getScanner(scan);
+                    List<Result> results = Lists.newArrayList(scanner);
+                    LOG.info("Results: " + results);
+                    compactionDone = results.isEmpty();
+                    scanner.close();
+                }
                 LOG.info("Compaction done: " + compactionDone);
+                
+                // need to run compaction after the next txn snapshot has been written so that compaction can remove deleted rows
+                if (!compactionDone && table.isTransactional()) {
+                    hbaseAdmin = services.getAdmin();
+                    hbaseAdmin.flush(tableName);
+                    hbaseAdmin.majorCompact(tableName);
+                    hbaseAdmin.close();
+                }
             }
         }
     }

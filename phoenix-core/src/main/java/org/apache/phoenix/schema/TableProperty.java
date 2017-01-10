@@ -145,6 +145,27 @@ public enum TableProperty {
         }       
 	    
 	},
+	
+	COLUMN_ENCODED_BYTES(PhoenixDatabaseMetaData.COLUMN_ENCODED_BYTES, COLUMN_FAMILY_NOT_ALLOWED_TABLE_PROPERTY, false, false, false) {
+	    @Override
+        public Object getValue(Object value) {
+	        if (value instanceof String) {
+	            String strValue = (String) value;
+	            if ("NONE".equalsIgnoreCase(strValue)) {
+	                return (byte)0;
+	            } 
+	        } else {
+	            return value == null ? null : ((Number) value).byteValue();
+	        }
+	        return value;
+	    }
+
+		@Override
+		public Object getPTableValue(PTable table) {
+			return table.getEncodingScheme();
+		}	
+	    
+	}
     ;
 	
 	private final String propertyName;

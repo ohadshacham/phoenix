@@ -224,7 +224,7 @@ public interface QueryConstants {
     public static final ImmutableBytesPtr DEFAULT_COLUMN_FAMILY_BYTES_PTR = new ImmutableBytesPtr(
             DEFAULT_COLUMN_FAMILY_BYTES);
     // column qualifier of the single key value used to store all columns for the COLUMNS_STORED_IN_SINGLE_CELL storage scheme
-    public static final String SINGLE_KEYVALUE_COLUMN_QUALIFIER = "0";
+    public static final String SINGLE_KEYVALUE_COLUMN_QUALIFIER = "1";
     public final static byte[] SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES = Bytes.toBytes(SINGLE_KEYVALUE_COLUMN_QUALIFIER);
     public static final ImmutableBytesPtr SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES_PTR = new ImmutableBytesPtr(
             SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES);

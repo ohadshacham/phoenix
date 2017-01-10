@@ -93,7 +93,6 @@ import static org.apache.phoenix.query.QueryServices.DROP_METADATA_ATTRIB;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_DROP_METADATA;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_RUN_UPDATE_STATS_ASYNC;
 import static org.apache.phoenix.schema.PTable.EncodedCQCounter.NULL_COUNTER;
-import static org.apache.phoenix.schema.PTable.QualifierEncodingScheme.FOUR_BYTE_QUALIFIERS;
 import static org.apache.phoenix.schema.PTable.QualifierEncodingScheme.NON_ENCODED_QUALIFIERS;
 import static org.apache.phoenix.schema.PTable.StorageScheme.ONE_CELL_PER_COLUMN_FAMILY;
 import static org.apache.phoenix.schema.PTable.StorageScheme.ONE_CELL_PER_KEYVALUE_COLUMN;
@@ -199,6 +198,7 @@ import org.apache.phoenix.schema.PTable.EncodedCQCounter;
 import org.apache.phoenix.schema.PTable.IndexType;
 import org.apache.phoenix.schema.PTable.LinkType;
 import org.apache.phoenix.schema.PTable.QualifierEncodingScheme;
+import org.apache.phoenix.schema.PTable.QualifierEncodingScheme.QualifierOutOfRangeException;
 import org.apache.phoenix.schema.PTable.StorageScheme;
 import org.apache.phoenix.schema.PTable.ViewType;
 import org.apache.phoenix.schema.stats.GuidePostsKey;
@@ -977,7 +977,7 @@ public class MetaDataClient {
         }
         table = createTableInternal(statement, splits, parent, viewStatement, viewType, viewColumnConstants, isViewColumnReferenced, false, null, null, tableProps, commonFamilyProps);
 
-        if (table == null || table.getType() == PTableType.VIEW || table.isTransactional()) {
+        if (table == null || table.getType() == PTableType.VIEW /*|| table.isTransactional()*/) {
             return new MutationState(0,connection);
         }
         // Hack to get around the case when an SCN is specified on the connection.
@@ -1695,6 +1695,7 @@ public class MetaDataClient {
                     ? SchemaUtil.isNamespaceMappingEnabled(tableType, connection.getQueryServices().getProps())
                     : parent.isNamespaceMapped();
             boolean isLocalIndex = indexType == IndexType.LOCAL;
+            QualifierEncodingScheme encodingScheme = QualifierEncodingScheme.NON_ENCODED_QUALIFIERS;
             if (parent != null && tableType == PTableType.INDEX) {
                 timestamp = TransactionUtil.getTableTimestamp(connection, transactional);
                 storeNulls = parent.getStoreNulls();
@@ -2033,7 +2034,6 @@ public class MetaDataClient {
             int pkPositionOffset = pkColumns.size();
             int position = positionOffset;
             StorageScheme storageScheme = ONE_CELL_PER_KEYVALUE_COLUMN;
-            QualifierEncodingScheme encodingScheme = NON_ENCODED_QUALIFIERS;
             EncodedCQCounter cqCounter = NULL_COUNTER;
             PTable viewPhysicalTable = null;
             if (tableType == PTableType.VIEW) {
@@ -2087,23 +2087,22 @@ public class MetaDataClient {
                     tableExists = false;
                 }
                 if (tableExists) {
-                    storageScheme = ONE_CELL_PER_KEYVALUE_COLUMN;
                     encodingScheme = NON_ENCODED_QUALIFIERS;
                 } else if (parent != null) {
-                    storageScheme = parent.getStorageScheme();
                     encodingScheme = parent.getEncodingScheme();
-                } else if (isImmutableRows) {
-                    storageScheme = ONE_CELL_PER_COLUMN_FAMILY;
-                    encodingScheme = FOUR_BYTE_QUALIFIERS;
-                    // since we are storing all columns of a column family in a single key value we can't use deletes to store nulls
-                    storeNulls = true;
                 } else {
-                    storageScheme = ONE_CELL_PER_KEYVALUE_COLUMN;
-                    encodingScheme = FOUR_BYTE_QUALIFIERS;
+                	Byte encodingSchemeSerializedByte = (Byte) TableProperty.COLUMN_ENCODED_BYTES.getValue(tableProps);
+                    if (encodingSchemeSerializedByte == null) {
+                    	encodingSchemeSerializedByte = (byte)connection.getQueryServices().getProps().getInt(QueryServices.DEFAULT_COLUMN_ENCODED_BYTES_ATRRIB, QueryServicesOptions.DEFAULT_COLUMN_ENCODED_BYTES);
+                    } 
+                    encodingScheme =  QualifierEncodingScheme.fromSerializedValue(encodingSchemeSerializedByte);
                 }
+                if (isImmutableRows && encodingScheme != NON_ENCODED_QUALIFIERS) {
+                    storageScheme = ONE_CELL_PER_COLUMN_FAMILY;
+                } 
                 cqCounter = encodingScheme != NON_ENCODED_QUALIFIERS ? new EncodedCQCounter() : NULL_COUNTER;
             }
-            
+                        
             Map<String, Integer> changedCqCounters = new HashMap<>(colDefs.size());
             for (ColumnDef colDef : colDefs) {
                 rowTimeStampColumnAlreadyFound = checkAndValidateRowTimestampCol(colDef, pkConstraint, rowTimeStampColumnAlreadyFound, tableType);
@@ -2137,7 +2136,15 @@ public class MetaDataClient {
                     }
                 }
                 Integer encodedCQ =  isPkColumn ? null : cqCounter.getNextQualifier(cqCounterFamily);
-                byte[] columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme);
+                byte[] columnQualifierBytes = null;
+                try {
+                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme);
+                }
+                catch (QualifierOutOfRangeException e) {
+                    throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
+                    .setSchemaName(schemaName)
+                    .setTableName(tableName).build().buildException();
+                }
                 PColumn column = newColumn(position++, colDef, pkConstraint, defaultFamilyName, false, columnQualifierBytes);
                 if (cqCounter.increment(cqCounterFamily)) {
                     changedCqCounters.put(cqCounterFamily, cqCounter.getNextQualifier(cqCounterFamily));
@@ -2176,8 +2183,6 @@ public class MetaDataClient {
                         column.getFamilyName());
                 }
             }
-            
-            
             
             // We need a PK definition for a TABLE or mapped VIEW
             if (!isPK && pkColumnsNames.isEmpty() && tableType != PTableType.VIEW && viewType != ViewType.MAPPED) {
@@ -3182,7 +3187,15 @@ public class MetaDataClient {
                                         cqCounterToUse.getNextQualifier(familyName));
                                 }
                             }
-                            byte[] columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table);
+                            byte[] columnQualifierBytes = null;
+                            try {
+                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table);
+                            }
+                            catch (QualifierOutOfRangeException e) {
+                                throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
+                                .setSchemaName(schemaName)
+                                .setTableName(tableName).build().buildException();
+                            }
                             PColumn column = newColumn(position++, colDef, PrimaryKeyConstraint.EMPTY, table.getDefaultFamilyName() == null ? null : table.getDefaultFamilyName().getString(), true, columnQualifierBytes);
                             columns.add(column);
                             String pkName = null;

@@ -147,7 +147,8 @@ import org.apache.tephra.TransactionManager;
 import org.apache.tephra.TxConstants;
 import org.apache.tephra.distributed.TransactionService;
 import org.apache.tephra.metrics.TxMetricsCollector;
-import org.apache.tephra.persist.InMemoryTransactionStateStorage;
+import org.apache.tephra.persist.HDFSTransactionStateStorage;
+import org.apache.tephra.snapshot.SnapshotCodecProvider;
 import org.apache.twill.discovery.DiscoveryService;
 import org.apache.twill.discovery.ZKDiscoveryService;
 import org.apache.twill.internal.utils.Networks;
@@ -450,14 +451,18 @@ public abstract class BaseTest {
         
     }
     
-    protected static void setupTxManager() throws SQLException, IOException {
+    protected static void setTxnConfigs() throws IOException {
         config.setBoolean(TxConstants.Manager.CFG_DO_PERSIST, false);
         config.set(TxConstants.Service.CFG_DATA_TX_CLIENT_RETRY_STRATEGY, "n-times");
         config.setInt(TxConstants.Service.CFG_DATA_TX_CLIENT_ATTEMPTS, 1);
         config.setInt(TxConstants.Service.CFG_DATA_TX_BIND_PORT, Networks.getRandomPort());
         config.set(TxConstants.Manager.CFG_TX_SNAPSHOT_DIR, tmpFolder.newFolder().getAbsolutePath());
         config.setInt(TxConstants.Manager.CFG_TX_TIMEOUT, DEFAULT_TXN_TIMEOUT_SECONDS);
-
+        config.unset(TxConstants.Manager.CFG_TX_HDFS_USER);
+        config.setLong(TxConstants.Manager.CFG_TX_SNAPSHOT_INTERVAL, 5L);
+    }
+    
+    protected static void setupTxManager() throws SQLException, IOException {
         ConnectionInfo connInfo = ConnectionInfo.create(getUrl());
         zkClient = ZKClientServices.delegate(
           ZKClients.reWatchOnExpire(
@@ -473,7 +478,7 @@ public abstract class BaseTest {
         zkClient.startAndWait();
 
         DiscoveryService discovery = new ZKDiscoveryService(zkClient);
-        txManager = new TransactionManager(config, new InMemoryTransactionStateStorage(), new TxMetricsCollector());
+        txManager = new TransactionManager(config, new HDFSTransactionStateStorage(config, new SnapshotCodecProvider(config), new TxMetricsCollector()), new TxMetricsCollector());
         txService = new TransactionService(config, zkClient, discovery, Providers.of(txManager));
         txService.startAndWait();
     }
@@ -502,8 +507,9 @@ public abstract class BaseTest {
     /**
      * Set up the test hbase cluster.
      * @return url to be used by clients to connect to the cluster.
+     * @throws IOException 
      */
-    protected static String setUpTestCluster(@Nonnull Configuration conf, ReadOnlyProps overrideProps) {
+    protected static String setUpTestCluster(@Nonnull Configuration conf, ReadOnlyProps overrideProps) throws IOException {
         boolean isDistributedCluster = isDistributedClusterModeEnabled(conf);
         if (!isDistributedCluster) {
             return initMiniCluster(conf, overrideProps);
@@ -558,8 +564,9 @@ public abstract class BaseTest {
     }
     
     protected static void setUpTestDriver(ReadOnlyProps serverProps, ReadOnlyProps clientProps) throws Exception {
+        setTxnConfigs();
         String url = checkClusterInitialized(serverProps);
-        checkTxManagerInitialized(clientProps);
+        checkTxManagerInitialized(serverProps);
         if (driver == null) {
             driver = initAndRegisterTestDriver(url, clientProps);
         }

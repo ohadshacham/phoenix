@@ -762,7 +762,7 @@ public class QueryOptimizerTest extends BaseConnectionlessQueryTest {
     public void testMinMaxQualifierRangeWithOrderByOnKVColumn() throws Exception {
         Connection conn = DriverManager.getConnection(getUrl());
         String tableName = "testMintestMinMaxQualifierRange".toUpperCase();
-        conn.createStatement().execute("CREATE TABLE " + tableName + " (k INTEGER NOT NULL PRIMARY KEY, v1 INTEGER, v2 VARCHAR)");
+        conn.createStatement().execute("CREATE TABLE " + tableName + " (k INTEGER NOT NULL PRIMARY KEY, v1 INTEGER, v2 VARCHAR) COLUMN_ENCODED_BYTES=4");
         PhoenixStatement stmt = conn.createStatement().unwrap(PhoenixStatement.class);
         ResultSet rs = stmt.executeQuery("SELECT K from " + tableName + " ORDER BY (v1)");
         assertQualifierRanges(rs, ENCODED_EMPTY_COLUMN_NAME, ENCODED_CQ_COUNTER_INITIAL_VALUE);
@@ -778,7 +778,7 @@ public class QueryOptimizerTest extends BaseConnectionlessQueryTest {
     public void testMinMaxQualifierRangeWithNoOrderBy() throws Exception {
         Connection conn = DriverManager.getConnection(getUrl());
         String tableName = "testMintestMinMaxQualifierRange".toUpperCase();
-        conn.createStatement().execute("CREATE TABLE " + tableName + " (k INTEGER NOT NULL PRIMARY KEY, v1 INTEGER, v2 VARCHAR)");
+        conn.createStatement().execute("CREATE TABLE " + tableName + " (k INTEGER NOT NULL PRIMARY KEY, v1 INTEGER, v2 VARCHAR) COLUMN_ENCODED_BYTES=4");
         PhoenixStatement stmt = conn.createStatement().unwrap(PhoenixStatement.class);
         ResultSet rs = stmt.executeQuery("SELECT K from " + tableName);
         assertQualifierRanges(rs, ENCODED_CQ_COUNTER_INITIAL_VALUE, ENCODED_CQ_COUNTER_INITIAL_VALUE + 1);

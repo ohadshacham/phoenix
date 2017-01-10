@@ -54,6 +54,7 @@ import org.apache.phoenix.util.PropertiesUtil;
 import org.apache.phoenix.util.QueryUtil;
 import org.apache.phoenix.util.SchemaUtil;
 import org.apache.phoenix.util.TestUtil;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -614,11 +615,13 @@ public class MutableIndexIT extends ParallelStatsDisabledIT {
     }
 
     @Test
+    @Ignore //TODO remove after PHOENIX-3585 is fixed
     public void testSplitDuringIndexScan() throws Exception {
         testSplitDuringIndexScan(false);
     }
     
     @Test
+    @Ignore //TODO remove after PHOENIX-3585 is fixed
     public void testSplitDuringIndexReverseScan() throws Exception {
         testSplitDuringIndexScan(true);
     }
@@ -676,6 +679,7 @@ public class MutableIndexIT extends ParallelStatsDisabledIT {
     }
 
     @Test
+    @Ignore //TODO remove after PHOENIX-3585 is fixed
     public void testIndexHalfStoreFileReader() throws Exception {
         Connection conn1 = getConnection();
         HBaseAdmin admin = driver.getConnectionQueryServices(getUrl(), TestUtil.TEST_PROPERTIES).getAdmin();
