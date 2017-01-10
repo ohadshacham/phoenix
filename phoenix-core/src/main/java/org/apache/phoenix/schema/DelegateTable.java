@@ -292,8 +292,8 @@ public class DelegateTable implements PTable {
     }
     
     @Override
-    public StorageScheme getStorageScheme() {
-        return delegate.getStorageScheme();
+    public ImmutableStorageScheme getImmutableStorageScheme() {
+        return delegate.getImmutableStorageScheme();
     }
 
     @Override

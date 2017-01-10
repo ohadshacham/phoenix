@@ -179,7 +179,7 @@ public enum ExpressionType {
     DayOfWeekFunction(DayOfWeekFunction.class),
     DayOfYearFunction(DayOfYearFunction.class),
     DefaultValueExpression(DefaultValueExpression.class),
-    ArrayColumnExpression(ArrayColumnExpression.class);
+    ArrayColumnExpression(SingleCellColumnExpression.class);
     ExpressionType(Class<? extends Expression> clazz) {
         this.clazz = clazz;
     }

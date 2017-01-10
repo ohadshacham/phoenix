@@ -77,10 +77,10 @@ public class AlterTableWithViewsIT extends ParallelStatsDisabledIT {
     
     private String generateDDL(String options, String format) {
         StringBuilder optionsBuilder = new StringBuilder(options);
-        if (columnEncoded) {
+        if (!columnEncoded) {
             if (optionsBuilder.length()!=0)
                 optionsBuilder.append(",");
-            optionsBuilder.append("COLUMN_ENCODED_BYTES=4");
+            optionsBuilder.append("COLUMN_ENCODED_BYTES=0");
         }
         if (isMultiTenant) {
             if (optionsBuilder.length()!=0)

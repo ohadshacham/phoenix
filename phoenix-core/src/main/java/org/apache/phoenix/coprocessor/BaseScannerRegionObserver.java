@@ -108,6 +108,7 @@ abstract public class BaseScannerRegionObserver extends BaseRegionObserver {
     public final static String MIN_QUALIFIER = "_MinQualifier";
     public final static String MAX_QUALIFIER = "_MaxQualifier";
     public final static String QUALIFIER_ENCODING_SCHEME = "_QualifierEncodingScheme";
+    public final static String IMMUTABLE_STORAGE_ENCODING_SCHEME = "_ImmutableStorageEncodingScheme";
     
     /**
      * Attribute name used to pass custom annotations in Scans and Mutations (later). Custom annotations

@@ -19,6 +19,7 @@ package org.apache.phoenix.schema;
 
 import static org.apache.phoenix.query.QueryConstants.ENCODED_CQ_COUNTER_INITIAL_VALUE;
 
+import java.io.DataOutputStream;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -32,6 +33,12 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
+import org.apache.phoenix.schema.types.PArrayDataType;
+import org.apache.phoenix.schema.types.PArrayDataTypeDecoder;
+import org.apache.phoenix.schema.types.PArrayDataTypeEncoder;
+import org.apache.phoenix.schema.types.PDataType;
+import org.apache.phoenix.schema.types.PVarbinary;
+import org.apache.phoenix.util.TrustedByteArrayOutputStream;
 
 import com.google.common.annotations.VisibleForTesting;
 
@@ -164,32 +171,57 @@ public interface PTable extends PMetaDataEntity {
         }
     }
     
-    public enum StorageScheme {
-        ONE_CELL_PER_KEYVALUE_COLUMN((byte)1),
-        ONE_CELL_PER_COLUMN_FAMILY((byte)2);
+    public enum ImmutableStorageScheme implements ColumnValueEncoderDecoderSupplier {
+        ONE_CELL_PER_COLUMN((byte)1) {
+            @Override
+            public ColumnValueEncoder getEncoder(int numElements) {
+                throw new UnsupportedOperationException();
+            }
+            
+            @Override
+            public ColumnValueDecoder getDecoder() {
+                throw new UnsupportedOperationException();
+            }
+        },
+        // stores a single cell per column family that contains all serialized column values
+        SINGLE_CELL_ARRAY_WITH_OFFSETS((byte)2) {
+            @Override
+            public ColumnValueEncoder getEncoder(int numElements) {
+                PDataType type = PVarbinary.INSTANCE;
+                int estimatedSize = PArrayDataType.estimateSize(numElements, type);
+                TrustedByteArrayOutputStream byteStream = new TrustedByteArrayOutputStream(estimatedSize);
+                DataOutputStream oStream = new DataOutputStream(byteStream);
+                return new PArrayDataTypeEncoder(byteStream, oStream, numElements, type, SortOrder.ASC, false, PArrayDataType.IMMUTABLE_SERIALIZATION_VERSION);
+            }
+            
+            @Override
+            public ColumnValueDecoder getDecoder() {
+                return new PArrayDataTypeDecoder();
+            }
+        };
 
-        private final byte[] byteValue;
         private final byte serializedValue;
         
-        StorageScheme(byte serializedValue) {
+        private ImmutableStorageScheme(byte serializedValue) {
             this.serializedValue = serializedValue;
-            this.byteValue = Bytes.toBytes(this.name());
-        }
-
-        public byte[] getBytes() {
-            return byteValue;
         }
 
         public byte getSerializedMetadataValue() {
             return this.serializedValue;
         }
 
-        public static StorageScheme fromSerializedValue(byte serializedValue) {
-            if (serializedValue < 1 || serializedValue > StorageScheme.values().length) {
+        public static ImmutableStorageScheme fromSerializedValue(byte serializedValue) {
+            if (serializedValue < 1 || serializedValue > ImmutableStorageScheme.values().length) {
                 return null;
             }
-            return StorageScheme.values()[serializedValue-1];
+            return ImmutableStorageScheme.values()[serializedValue-1];
         }
+
+    }
+    
+    interface ColumnValueEncoderDecoderSupplier {
+        ColumnValueEncoder getEncoder(int numElements);
+        ColumnValueDecoder getDecoder();
     }
     
     public enum QualifierEncodingScheme implements QualifierEncoderDecoder {
@@ -393,7 +425,7 @@ public interface PTable extends PMetaDataEntity {
         int decode(byte[] bytes, int offset, int length);
         Integer getMaxQualifier();
     }
-
+    
     long getTimeStamp();
     long getSequenceNumber();
     long getIndexDisableTimestamp();
@@ -607,7 +639,7 @@ public interface PTable extends PMetaDataEntity {
      * you are also not allowed to delete the table  
      */
     boolean isAppendOnlySchema();
-    StorageScheme getStorageScheme();
+    ImmutableStorageScheme getImmutableStorageScheme();
     QualifierEncodingScheme getEncodingScheme();
     EncodedCQCounter getEncodedCQCounter();
     

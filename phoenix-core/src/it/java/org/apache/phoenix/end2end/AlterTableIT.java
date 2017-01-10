@@ -105,7 +105,7 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
     
     public AlterTableIT(boolean columnEncoded) {
         this.columnEncoded = columnEncoded;
-        this.tableDDLOptions = columnEncoded ? "COLUMN_ENCODED_BYTES=4" : "";
+        this.tableDDLOptions = columnEncoded ? "" : "COLUMN_ENCODED_BYTES=0";
     }
     
     @Parameters(name="AlterTableIT_columnEncoded={0}") // name is used by failsafe as file name in reports
@@ -301,7 +301,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
         conn.createStatement().execute(
           "CREATE TABLE " + dataTableFullName
               + " (k VARCHAR NOT NULL PRIMARY KEY, v1 VARCHAR, v2 VARCHAR) "
-              + generateDDLOptions((immutable ? "IMMUTABLE_ROWS = true" : "")));
+              + generateDDLOptions(immutable ? "IMMUTABLE_ROWS = true" : "")
+              + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : ""));
         query = "SELECT * FROM " + dataTableFullName;
         rs = conn.createStatement().executeQuery(query);
         assertFalse(rs.next());
@@ -795,7 +796,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                             "CREATE TABLE " + dataTableFullName
                                     + "  (a_string varchar not null, col1 integer, cf1.col2 integer, col3 integer , cf2.col4 integer "
                                     + "  CONSTRAINT pk PRIMARY KEY (a_string)) "
-                                    + generateDDLOptions("immutable_rows=true, disable_wal=true"));
+                                    + generateDDLOptions("immutable_rows=true, disable_wal=true"
+                                    + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : "")));
 
             Connection conn2 = DriverManager.getConnection(getUrl(), props);
             String query = "SELECT * FROM " + dataTableFullName;
@@ -828,7 +830,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                             "CREATE TABLE " + dataTableFullName
                                     + "  (a_string varchar not null, col1 integer, cf1.col2 integer, col3 integer , cf2.col4 integer "
                                     + "  CONSTRAINT pk PRIMARY KEY (a_string))" 
-                                    + generateDDLOptions("immutable_rows=true"));
+                                    + generateDDLOptions("immutable_rows=true"
+                                    + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : "")));
 
             Connection conn2 = DriverManager.getConnection(getUrl(), props);
             String query = "SELECT * FROM " + dataTableFullName;
@@ -900,7 +903,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                             "CREATE TABLE " + dataTableFullName
                                     + "  (a_string varchar not null, col1 integer, cf1.col2 integer, col3 integer , cf2.col4 integer "
                                     + "  CONSTRAINT pk PRIMARY KEY (a_string)) " 
-                                    + generateDDLOptions("immutable_rows=true , SALT_BUCKETS=3 "));
+                                    + generateDDLOptions("immutable_rows=true , SALT_BUCKETS=3 "
+                                    + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : "")));
 
             String query = "SELECT * FROM " + dataTableFullName;
             ResultSet rs = conn.createStatement().executeQuery(query);
@@ -1220,7 +1224,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                 +"CREATED_DATE DATE,\n"
                 +"CF1.CREATION_TIME BIGINT,\n"
                 +"CF2.LAST_USED DATE,\n"
-                +"CONSTRAINT PK PRIMARY KEY (ID1, ID2)) " + generateDDLOptions("IMMUTABLE_ROWS=true");
+                +"CONSTRAINT PK PRIMARY KEY (ID1, ID2)) " + generateDDLOptions("IMMUTABLE_ROWS=true"
+                + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : ""));
         Connection conn = DriverManager.getConnection(getUrl(), props);
         conn.createStatement().execute(ddl);
         assertImmutableRows(conn, dataTableFullName, true);
@@ -1432,7 +1437,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                 +"CREATED_DATE DATE,\n"
                 +"CREATION_TIME BIGINT,\n"
                 +"CF.LAST_USED DATE,\n"
-                +"CONSTRAINT PK PRIMARY KEY (ID1, ID2)) " + generateDDLOptions("IMMUTABLE_ROWS=true, DEFAULT_COLUMN_FAMILY = 'XYZ'");
+                +"CONSTRAINT PK PRIMARY KEY (ID1, ID2)) " + generateDDLOptions("IMMUTABLE_ROWS=true, DEFAULT_COLUMN_FAMILY = 'XYZ'"
+                + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : ""));
         Connection conn = DriverManager.getConnection(getUrl(), props);
         conn.createStatement().execute(ddl);
         assertImmutableRows(conn, dataTableFullName, true);
@@ -1678,7 +1684,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                             "CREATE TABLE "
                                     + dataTableFullName
     						+ "  (a_string varchar not null, col1 integer, cf1.col2 integer, col3 integer , cf2.col4 integer "
-    						+ "  CONSTRAINT pk PRIMARY KEY (a_string)) " + generateDDLOptions("immutable_rows=true , SALT_BUCKETS=3 "));
+    						+ "  CONSTRAINT pk PRIMARY KEY (a_string)) " + generateDDLOptions("immutable_rows=true , SALT_BUCKETS=3 "
+    						+ (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : ""))); 
 
             String ddl = "Alter table " + dataTableFullName + " add cf3.col5 integer, cf4.col6 integer in_memory=true";
     		conn.createStatement().execute(ddl);
@@ -1716,7 +1723,8 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                             "CREATE TABLE "
                                     + dataTableFullName
     						+ "  (a_string varchar not null, col1 integer, cf1.col2 integer, col3 integer , cf2.col4 integer "
-    						+ "  CONSTRAINT pk PRIMARY KEY (a_string)) " + generateDDLOptions("immutable_rows=true , SALT_BUCKETS=3 "));
+    						+ "  CONSTRAINT pk PRIMARY KEY (a_string)) " + generateDDLOptions("immutable_rows=true , SALT_BUCKETS=3 "
+    						+ (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : "")));    
 
             String ddl = "Alter table " + dataTableFullName + " add cf1.col5 integer in_memory=true";
     		conn.createStatement().execute(ddl);
@@ -2307,14 +2315,14 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
 	                + " COL2 bigint NOT NULL,"
 	                + " KV1 VARCHAR"
 	                + " CONSTRAINT NAME_PK PRIMARY KEY (ID, COL1, COL2)"
-	                + " ) " + generateDDLOptions("IMMUTABLE_ROWS = true"));
+	                + " ) " + generateDDLOptions("IMMUTABLE_ROWS = true"
+	                + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME="+ PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : "")));
 	        PTable baseTable = phxConn.getTable(new PTableKey(phxConn.getTenantId(), fullTableName));
 	        long initBaseTableSeqNumber = baseTable.getSequenceNumber(); 
 
 	        // assert that the client side cache is updated.
 	        EncodedCQCounter cqCounter = baseTable.getEncodedCQCounter();
 	        assertEquals( columnEncoded ? (Integer)(ENCODED_CQ_COUNTER_INITIAL_VALUE + 1) : null, cqCounter.getNextQualifier(QueryConstants.DEFAULT_COLUMN_FAMILY));
-	        
 	        
 	        // assert that the server side metadata is updated correctly.
 	        assertEncodedCQCounter(DEFAULT_COLUMN_FAMILY, schemaName, baseTableName, ENCODED_CQ_COUNTER_INITIAL_VALUE + 1);
@@ -2568,19 +2576,22 @@ public class AlterTableIT extends ParallelStatsDisabledIT {
                 +"ID VARCHAR(15) NOT NULL,\n"
                 +"CREATED_DATE DATE,\n"
                 +"CREATION_TIME BIGINT,\n"
-                +"CONSTRAINT PK PRIMARY KEY (ID)) " + generateDDLOptions("COLUMN_ENCODED_BYTES=4, IMMUTABLE_ROWS=true");
+                +"CONSTRAINT PK PRIMARY KEY (ID)) " + generateDDLOptions("COLUMN_ENCODED_BYTES=4, IMMUTABLE_ROWS=true"
+                + (!columnEncoded ? ",IMMUTABLE_STORAGE_SCHEME=" + PTable.ImmutableStorageScheme.ONE_CELL_PER_COLUMN : ""));
         Connection conn = DriverManager.getConnection(getUrl(), props);
         conn.createStatement().execute(ddl);
         assertImmutableRows(conn, dataTableFullName, true);
         try {
 	        ddl = "ALTER TABLE " + dataTableFullName + " SET IMMUTABLE_ROWS = false";
 	        conn.createStatement().execute(ddl);
-	        fail();
+	        if (columnEncoded) {
+	            fail();
+	        }
         }
         catch(SQLException e) {
         	assertEquals(SQLExceptionCode.CANNOT_ALTER_IMMUTABLE_ROWS_PROPERTY.getErrorCode(), e.getErrorCode());
         }
-        assertImmutableRows(conn, dataTableFullName, true);
+        assertImmutableRows(conn, dataTableFullName, columnEncoded);
     }
     
 }

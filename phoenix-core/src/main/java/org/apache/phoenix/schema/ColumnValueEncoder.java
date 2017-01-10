@@ -15,17 +15,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.phoenix.expression.visitor;
+package org.apache.phoenix.schema;
 
-import java.util.List;
+import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
 
-import org.apache.phoenix.expression.Determinism;
-import org.apache.phoenix.expression.Expression;
 
-public class CloneNonDeterministicExpressionVisitor extends CloneExpressionVisitor {
-
-    @Override
-    public boolean isCloneNode(Expression node, List<Expression> children) {
-        return Determinism.PER_INVOCATION.compareTo(node.getDeterminism()) <= 0;
-    }
+/**
+ * Interface to encode column values into a serialized byte[] that will be stored in a single cell
+ * The last byte of the serialized byte[] should be the serialized value of the {@link ImmutableStorageScheme}
+ * that was used.
+ */
+public interface ColumnValueEncoder {
+    
+    /**
+     * append a column value to the array
+     */
+    void appendValue(byte[] bytes, int offset, int length);
+    
+    /**
+     * append a value that is not present to the array (used to support DEFAULT expressions)
+     */
+    void appendAbsentValue();
+    
+    /**
+     * @return the encoded byte[] that contains the serialized column values
+     */
+    byte[] encode();
+    
 }

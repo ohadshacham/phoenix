@@ -25,52 +25,54 @@ import java.io.DataOutput;
 import java.io.IOException;
 
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.phoenix.compile.CreateTableCompiler.ViewWhereExpressionVisitor;
 import org.apache.phoenix.expression.visitor.ExpressionVisitor;
+import org.apache.phoenix.query.QueryConstants;
+import org.apache.phoenix.schema.ColumnValueDecoder;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PDatum;
+import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
 import org.apache.phoenix.schema.PTable.QualifierEncodingScheme;
 import org.apache.phoenix.schema.SortOrder;
 import org.apache.phoenix.schema.tuple.Tuple;
-import org.apache.phoenix.schema.types.PArrayDataType;
 import org.apache.phoenix.schema.types.PDataType;
-import org.apache.phoenix.schema.types.PVarbinary;
 import org.apache.phoenix.util.SchemaUtil;
 
 import com.google.common.base.Preconditions;
 
 /**
  * 
- * Class to access a column that is stored in a KeyValue that contains all
- * columns for a given column family (stored in an array).
+ * Class to access a column that is stored in a Cell that contains all
+ * columns for a given column family (stored in a serialized array).
  *
  */
-public class ArrayColumnExpression extends KeyValueColumnExpression {
+public class SingleCellColumnExpression extends KeyValueColumnExpression {
     
-    private int positionInArray;
+    private int decodedColumnQualifier;
     private String arrayColDisplayName;
     private KeyValueColumnExpression keyValueColumnExpression;
     private QualifierEncodingScheme encodingScheme;
     
-    public ArrayColumnExpression() {
+    public SingleCellColumnExpression() {
     }
     
-    public ArrayColumnExpression(PDatum column, byte[] cf, byte[] cq, QualifierEncodingScheme encodingScheme) {
+    public SingleCellColumnExpression(PDatum column, byte[] cf, byte[] cq, QualifierEncodingScheme encodingScheme) {
         super(column, cf, SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES);
         Preconditions.checkNotNull(encodingScheme);
         Preconditions.checkArgument(encodingScheme != NON_ENCODED_QUALIFIERS);
-        this.positionInArray = encodingScheme.decode(cq);
+        this.decodedColumnQualifier = encodingScheme.decode(cq);
         this.encodingScheme = encodingScheme;
         setKeyValueExpression();
     }
     
-    public ArrayColumnExpression(PColumn column, String displayName, QualifierEncodingScheme encodingScheme) {
+    public SingleCellColumnExpression(PColumn column, String displayName, QualifierEncodingScheme encodingScheme) {
         super(column, column.getFamilyName().getBytes(), SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES);
         Preconditions.checkNotNull(encodingScheme);
         Preconditions.checkArgument(encodingScheme != NON_ENCODED_QUALIFIERS);
         this.arrayColDisplayName = displayName;
-        this.positionInArray = encodingScheme.decode(column.getColumnQualifierBytes());
+        this.decodedColumnQualifier = encodingScheme.decode(column.getColumnQualifierBytes());
         this.encodingScheme = encodingScheme;
         setKeyValueExpression();
     }
@@ -82,25 +84,28 @@ public class ArrayColumnExpression extends KeyValueColumnExpression {
         } else if (ptr.getLength() == 0) { 
         	return true; 
         }
-
+    	// the first position is reserved and we offset maxEncodedColumnQualifier by ENCODED_CQ_COUNTER_INITIAL_VALUE (which is the minimum encoded column qualifier)
+    	int index = decodedColumnQualifier-QueryConstants.ENCODED_CQ_COUNTER_INITIAL_VALUE+1;
+    	byte serializedImmutableStorageScheme = ptr.get()[ptr.getOffset() + ptr.getLength() - Bytes.SIZEOF_BYTE];
+    	ImmutableStorageScheme immutableStorageScheme = ImmutableStorageScheme.fromSerializedValue(serializedImmutableStorageScheme);
         // Given a ptr to the entire array, set ptr to point to a particular element within that array
-        // given the type of an array element (see comments in PDataTypeForArray)
-    	return PArrayDataType.positionAtArrayElement(ptr, positionInArray, PVarbinary.INSTANCE, null);
+    	ColumnValueDecoder encoderDecoder = immutableStorageScheme.getDecoder();
+    	return encoderDecoder.decode(ptr, index);
     }
 
     @Override
     public void readFields(DataInput input) throws IOException {
         super.readFields(input);
-        this.positionInArray = WritableUtils.readVInt(input);
-        this.encodingScheme = WritableUtils.readEnum(input, QualifierEncodingScheme.class);
+        this.decodedColumnQualifier = WritableUtils.readVInt(input);
+        this.encodingScheme = QualifierEncodingScheme.values()[WritableUtils.readVInt(input)];
         setKeyValueExpression();
     }
 
     @Override
     public void write(DataOutput output) throws IOException {
         super.write(output);
-        WritableUtils.writeVInt(output, positionInArray);
-        WritableUtils.writeEnum(output, encodingScheme);
+        WritableUtils.writeVInt(output, decodedColumnQualifier);
+        WritableUtils.writeVInt(output, encodingScheme.ordinal());
     }
     
     public KeyValueColumnExpression getKeyValueExpression() {
@@ -150,7 +155,7 @@ public class ArrayColumnExpression extends KeyValueColumnExpression {
     }
     
     public byte[] getPositionInArray() {
-        return encodingScheme.encode(positionInArray);
+        return encodingScheme.encode(decodedColumnQualifier);
     }
     
     @Override
@@ -162,4 +167,5 @@ public class ArrayColumnExpression extends KeyValueColumnExpression {
             return super.accept(visitor);
         }
     }
+    
 }

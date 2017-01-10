@@ -52,13 +52,13 @@ import org.apache.phoenix.compile.ColumnResolver;
 import org.apache.phoenix.compile.FromCompiler;
 import org.apache.phoenix.compile.IndexExpressionCompiler;
 import org.apache.phoenix.compile.StatementContext;
-import org.apache.phoenix.expression.ArrayColumnExpression;
-import org.apache.phoenix.expression.ArrayConstructorExpression;
 import org.apache.phoenix.expression.CoerceExpression;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.ExpressionType;
 import org.apache.phoenix.expression.KeyValueColumnExpression;
 import org.apache.phoenix.expression.LiteralExpression;
+import org.apache.phoenix.expression.SingleCellColumnExpression;
+import org.apache.phoenix.expression.SingleCellConstructorExpression;
 import org.apache.phoenix.expression.visitor.KeyValueExpressionVisitor;
 import org.apache.phoenix.hbase.index.ValueGetter;
 import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
@@ -80,9 +80,9 @@ import org.apache.phoenix.schema.PColumnFamily;
 import org.apache.phoenix.schema.PDatum;
 import org.apache.phoenix.schema.PIndexState;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
 import org.apache.phoenix.schema.PTable.IndexType;
 import org.apache.phoenix.schema.PTable.QualifierEncodingScheme;
-import org.apache.phoenix.schema.PTable.StorageScheme;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.RowKeySchema;
 import org.apache.phoenix.schema.SaltingUtil;
@@ -93,7 +93,6 @@ import org.apache.phoenix.schema.ValueSchema.Field;
 import org.apache.phoenix.schema.tuple.BaseTuple;
 import org.apache.phoenix.schema.tuple.ValueGetterTuple;
 import org.apache.phoenix.schema.types.PDataType;
-import org.apache.phoenix.schema.types.PVarchar;
 import org.apache.phoenix.util.BitSet;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.EncodedColumnsUtil;
@@ -309,7 +308,6 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
     private boolean indexWALDisabled;
     private boolean isLocalIndex;
     private boolean immutableRows;
-    private boolean storeColsInSingleCell;
 
     // Transient state
     private final boolean isDataTableSalted;
@@ -323,6 +321,7 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
     private boolean rowKeyOrderOptimizable;
     private ImmutableBytesPtr emptyKeyValueQualifierPtr;
     private QualifierEncodingScheme encodingScheme;
+    private ImmutableStorageScheme immutableStorageScheme;
     
     private IndexMaintainer(RowKeySchema dataRowKeySchema, boolean isDataTableSalted) {
         this.dataRowKeySchema = dataRowKeySchema;
@@ -337,6 +336,7 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
         this.viewIndexId = index.getViewIndexId() == null ? null : MetaDataUtil.getViewIndexIdDataType().toBytes(index.getViewIndexId());
         this.isLocalIndex = index.getIndexType() == IndexType.LOCAL;
         this.encodingScheme = index.getEncodingScheme();
+        this.immutableStorageScheme = index.getImmutableStorageScheme();
         byte[] indexTableName = index.getPhysicalName().getBytes();
         // Use this for the nDataSaltBuckets as we need this for local indexes
         // TODO: persist nDataSaltBuckets separately, but maintain b/w compat.
@@ -395,7 +395,6 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
         // TODO: check whether index is immutable or not. Currently it's always false so checking
         // data table is with immutable rows or not.
         this.immutableRows = dataTable.isImmutableRows();
-        this.storeColsInSingleCell = index.getStorageScheme() == StorageScheme.ONE_CELL_PER_COLUMN_FAMILY;
         int indexColByteSize = 0;
         ColumnResolver resolver = null;
         List<ParseNode> parseNodes = new ArrayList<ParseNode>(1);
@@ -464,18 +463,18 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
                     }
 
                     @Override
-                    public Void visit(ArrayColumnExpression expression) {
+                    public Void visit(SingleCellColumnExpression expression) {
                         return addDataColInfo(dataTable, expression);
                     }
 
                     private Void addDataColInfo(final PTable dataTable, Expression expression) {
-                        Preconditions.checkArgument(expression instanceof ArrayColumnExpression
+                        Preconditions.checkArgument(expression instanceof SingleCellColumnExpression
                                 || expression instanceof KeyValueColumnExpression);
 
                         KeyValueColumnExpression colExpression = null;
-                        if (expression instanceof ArrayColumnExpression) {
+                        if (expression instanceof SingleCellColumnExpression) {
                             colExpression =
-                                    ((ArrayColumnExpression) expression).getKeyValueExpression();
+                                    ((SingleCellColumnExpression) expression).getKeyValueExpression();
                         } else {
                             colExpression = ((KeyValueColumnExpression) expression);
                         }
@@ -934,7 +933,7 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
             put.setDurability(!indexWALDisabled ? Durability.USE_DEFAULT : Durability.SKIP_WAL);
         }
         ImmutableBytesPtr rowKey = new ImmutableBytesPtr(indexRowKey);
-        if (storeColsInSingleCell) {
+        if (immutableStorageScheme != immutableStorageScheme.ONE_CELL_PER_COLUMN) {
             // map from index column family to list of pair of index column and data column (for covered columns)
             Map<ImmutableBytesPtr, List<Pair<ColumnReference, ColumnReference>>> familyToColListMap = Maps.newHashMap();
             for (ColumnReference ref : this.getCoveredColumns()) {
@@ -949,18 +948,17 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
             for (Entry<ImmutableBytesPtr, List<Pair<ColumnReference, ColumnReference>>> entry : familyToColListMap.entrySet()) {
                 byte[] columnFamily = entry.getKey().copyBytesIfNecessary();
                 List<Pair<ColumnReference, ColumnReference>> colRefPairs = entry.getValue();
-                int maxIndex = Integer.MIN_VALUE;
+                int maxEncodedColumnQualifier = Integer.MIN_VALUE;
                 // find the max col qualifier
                 for (Pair<ColumnReference, ColumnReference> colRefPair : colRefPairs) {
-                    int qualifier = encodingScheme.decode(colRefPair.getFirst().getQualifier());
-                    maxIndex = Math.max(maxIndex, qualifier);
+                    maxEncodedColumnQualifier = Math.max(maxEncodedColumnQualifier, encodingScheme.decode(colRefPair.getFirst().getQualifier()));
                 }
-                byte[][] colValues = new byte[maxIndex+1][];
+                Expression[] colValues = EncodedColumnsUtil.createColumnExpressionArray(maxEncodedColumnQualifier);
                 // set the values of the columns
                 for (Pair<ColumnReference, ColumnReference> colRefPair : colRefPairs) {
                 	ColumnReference indexColRef = colRefPair.getFirst();
                 	ColumnReference dataColRef = colRefPair.getSecond();
-                	Expression expression = new ArrayColumnExpression(new PDatum() {
+                	Expression expression = new SingleCellColumnExpression(new PDatum() {
 						@Override
 						public boolean isNullable() {
 							return false;
@@ -990,21 +988,16 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
                     expression.evaluate(new ValueGetterTuple(valueGetter), ptr);
                     byte[] value = ptr.copyBytesIfNecessary();
 					if (value != null) {
-						int indexArrayPos = encodingScheme.decode(indexColRef.getQualifier());
-                        colValues[indexArrayPos] = value;
+						int indexArrayPos = encodingScheme.decode(indexColRef.getQualifier())-QueryConstants.ENCODED_CQ_COUNTER_INITIAL_VALUE+1;
+                        colValues[indexArrayPos] = new LiteralExpression(value);
                     }
                 }
                 
-                List<Expression> children = Lists.newArrayListWithExpectedSize(colRefPairs.size());
-                // create an expression list with all the columns
-                for (int j=0; j<colValues.length; ++j) {
-                    children.add(new LiteralExpression(colValues[j]==null ? ByteUtil.EMPTY_BYTE_ARRAY : colValues[j] ));
-                }
-                // we use ArrayConstructorExpression to serialize multiple columns into a single byte[]
-                // construct the ArrayConstructorExpression with a variable length data type (PVarchar) since columns can be of fixed or variable length 
-                ArrayConstructorExpression arrayExpression = new ArrayConstructorExpression(children, PVarchar.INSTANCE, rowKeyOrderOptimizable);
+                List<Expression> children = Arrays.asList(colValues);
+                // we use SingleCellConstructorExpression to serialize multiple columns into a single byte[]
+                SingleCellConstructorExpression singleCellConstructorExpression = new SingleCellConstructorExpression(immutableStorageScheme, children);
                 ImmutableBytesWritable ptr = new ImmutableBytesWritable();
-                arrayExpression.evaluate(new BaseTuple() {}, ptr);
+                singleCellConstructorExpression.evaluate(new BaseTuple() {}, ptr);
                 if (put == null) {
                     put = new Put(indexRowKey);
                     put.setDurability(!indexWALDisabled ? Durability.USE_DEFAULT : Durability.SKIP_WAL);
@@ -1308,7 +1301,7 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
             coveredColumnsInfo.add(new Pair<>(Bytes.toString(dataTableCf), Bytes.toString(dataTableCq)));
         }
         encodingScheme = WritableUtils.readEnum(input, QualifierEncodingScheme.class);
-        storeColsInSingleCell = WritableUtils.readVInt(input) > 0;
+        immutableStorageScheme = WritableUtils.readEnum(input, ImmutableStorageScheme.class);
         initCachedState();
     }
     
@@ -1370,7 +1363,7 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
             Bytes.writeByteArray(output, colInfo.getSecond().getBytes());
         }
         WritableUtils.writeEnum(output, encodingScheme);
-        WritableUtils.writeVInt(output, storeColsInSingleCell ? 1 : -1);
+        WritableUtils.writeEnum(output, immutableStorageScheme);
     }
 
     public int getEstimatedByteSize() {
@@ -1705,7 +1698,7 @@ public class IndexMaintainer implements Writable, Iterable<ColumnReference> {
         return indexedColumnsInfo;
     }
     
-    public StorageScheme getIndexStorageScheme() {
-        return storeColsInSingleCell ? StorageScheme.ONE_CELL_PER_COLUMN_FAMILY : StorageScheme.ONE_CELL_PER_KEYVALUE_COLUMN;
+    public ImmutableStorageScheme getIndexStorageScheme() {
+        return immutableStorageScheme;
     }
 }

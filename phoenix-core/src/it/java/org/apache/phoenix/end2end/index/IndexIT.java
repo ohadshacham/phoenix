@@ -84,7 +84,6 @@ public class IndexIT extends ParallelStatsDisabledIT {
     private final boolean mutable;
     private final String tableDDLOptions;
 
-
     public IndexIT(boolean localIndex, boolean mutable, boolean transactional) {
         this.localIndex = localIndex;
         this.transactional = transactional;

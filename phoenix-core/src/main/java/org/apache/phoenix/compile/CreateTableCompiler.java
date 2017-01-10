@@ -31,7 +31,6 @@ import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
 import org.apache.phoenix.execute.MutationState;
 import org.apache.phoenix.expression.AndExpression;
-import org.apache.phoenix.expression.ArrayColumnExpression;
 import org.apache.phoenix.expression.ComparisonExpression;
 import org.apache.phoenix.expression.Determinism;
 import org.apache.phoenix.expression.Expression;
@@ -39,6 +38,7 @@ import org.apache.phoenix.expression.IsNullExpression;
 import org.apache.phoenix.expression.KeyValueColumnExpression;
 import org.apache.phoenix.expression.LiteralExpression;
 import org.apache.phoenix.expression.RowKeyColumnExpression;
+import org.apache.phoenix.expression.SingleCellColumnExpression;
 import org.apache.phoenix.expression.visitor.StatelessTraverseNoExpressionVisitor;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixStatement;
@@ -327,13 +327,8 @@ public class CreateTableCompiler {
         }
         
         @Override
-        public Boolean visit(ArrayColumnExpression node) {
-            try {
-                this.position = table.getColumnFamily(node.getColumnFamily()).getPColumnForColumnQualifier(node.getPositionInArray()).getPosition();
-            } catch (SQLException e) {
-                throw new RuntimeException(e);
-            }
-            return Boolean.TRUE;
+        public Boolean visit(SingleCellColumnExpression node) {
+            return visit(node.getKeyValueExpression());
         }
         
     }

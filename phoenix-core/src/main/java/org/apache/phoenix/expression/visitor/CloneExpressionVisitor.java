@@ -26,7 +26,6 @@ import org.apache.phoenix.expression.ArrayConstructorExpression;
 import org.apache.phoenix.expression.CaseExpression;
 import org.apache.phoenix.expression.CoerceExpression;
 import org.apache.phoenix.expression.ComparisonExpression;
-import org.apache.phoenix.expression.ArrayColumnExpression;
 import org.apache.phoenix.expression.CorrelateVariableFieldAccessExpression;
 import org.apache.phoenix.expression.DivideExpression;
 import org.apache.phoenix.expression.Expression;
@@ -42,6 +41,8 @@ import org.apache.phoenix.expression.OrExpression;
 import org.apache.phoenix.expression.ProjectedColumnExpression;
 import org.apache.phoenix.expression.RowKeyColumnExpression;
 import org.apache.phoenix.expression.RowValueConstructorExpression;
+import org.apache.phoenix.expression.SingleCellColumnExpression;
+import org.apache.phoenix.expression.SingleCellConstructorExpression;
 import org.apache.phoenix.expression.StringConcatExpression;
 import org.apache.phoenix.expression.SubtractExpression;
 import org.apache.phoenix.expression.function.ArrayAnyComparisonExpression;
@@ -83,7 +84,7 @@ public abstract class CloneExpressionVisitor extends TraverseAllExpressionVisito
     }
     
     @Override
-    public Expression visit(ArrayColumnExpression node) {
+    public Expression visit(SingleCellColumnExpression node) {
         return node;
     }
 
@@ -186,6 +187,11 @@ public abstract class CloneExpressionVisitor extends TraverseAllExpressionVisito
 
     @Override
     public Expression visitLeave(ArrayConstructorExpression node, List<Expression> l) {
+        return isCloneNode(node, l) ? node.clone(l) : node;
+    }
+    
+    @Override
+    public Expression visitLeave(SingleCellConstructorExpression node, List<Expression> l) {
         return isCloneNode(node, l) ? node.clone(l) : node;
     }
 

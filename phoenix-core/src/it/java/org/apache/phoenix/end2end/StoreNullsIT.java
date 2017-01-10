@@ -34,14 +34,15 @@ import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.client.Result;
 import org.apache.hadoop.hbase.client.ResultScanner;
 import org.apache.hadoop.hbase.client.Scan;
-import org.apache.phoenix.expression.ArrayColumnExpression;
 import org.apache.phoenix.expression.KeyValueColumnExpression;
+import org.apache.phoenix.expression.SingleCellColumnExpression;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PTable;
-import org.apache.phoenix.schema.PTable.StorageScheme;
+import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
+import org.apache.phoenix.schema.PTableImpl;
 import org.apache.phoenix.schema.PTableKey;
 import org.apache.phoenix.schema.tuple.ResultTuple;
 import org.apache.phoenix.schema.types.PVarchar;
@@ -76,11 +77,14 @@ public class StoreNullsIT extends ParallelStatsDisabledIT {
         this.storeNulls = storeNulls;
         
         StringBuilder sb = new StringBuilder("CREATE TABLE %s (id SMALLINT NOT NULL PRIMARY KEY, name VARCHAR) VERSIONS = 1000, KEEP_DELETED_CELLS = false ");
+        if (!columnEncoded) {
+            sb.append(",").append("COLUMN_ENCODED_BYTES=0");
+        }
         if (!mutable) {
             sb.append(",").append("IMMUTABLE_ROWS=true");
-        }
-        if (columnEncoded) {
-            sb.append(",").append("COLUMN_ENCODED_BYTES=4");
+            if (!columnEncoded) {
+                sb.append(",IMMUTABLE_STORAGE_SCHEME="+PTableImpl.ImmutableStorageScheme.ONE_CELL_PER_COLUMN);
+            }
         }
         if (storeNulls) {
             sb.append(",").append("STORE_NULLS=true");
@@ -132,10 +136,10 @@ public class StoreNullsIT extends ParallelStatsDisabledIT {
         Result rs = scanner.next();
         PTable table = conn.unwrap(PhoenixConnection.class).getTable(new PTableKey(null, dataTableName));
         PColumn nameColumn = table.getPColumnForColumnName("NAME");
-        byte[] qualifier = table.getStorageScheme()== StorageScheme.ONE_CELL_PER_COLUMN_FAMILY ? QueryConstants.SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES : nameColumn.getColumnQualifierBytes();
+        byte[] qualifier = table.getImmutableStorageScheme()== ImmutableStorageScheme.SINGLE_CELL_ARRAY_WITH_OFFSETS ? QueryConstants.SINGLE_KEYVALUE_COLUMN_QUALIFIER_BYTES : nameColumn.getColumnQualifierBytes();
         assertTrue(rs.containsColumn(QueryConstants.DEFAULT_COLUMN_FAMILY_BYTES, qualifier));
         assertTrue(rs.size() == 2); // 2 because it also includes the empty key value column
-        KeyValueColumnExpression colExpression = table.getStorageScheme() == StorageScheme.ONE_CELL_PER_COLUMN_FAMILY ? new ArrayColumnExpression(nameColumn, "NAME", table.getEncodingScheme()) : new KeyValueColumnExpression(nameColumn);
+        KeyValueColumnExpression colExpression = table.getImmutableStorageScheme() == ImmutableStorageScheme.SINGLE_CELL_ARRAY_WITH_OFFSETS ? new SingleCellColumnExpression(nameColumn, "NAME", table.getEncodingScheme()) : new KeyValueColumnExpression(nameColumn);
         ImmutableBytesPtr ptr = new ImmutableBytesPtr();
         colExpression.evaluate(new ResultTuple(rs), ptr);
         assertEquals(new ImmutableBytesPtr(PVarchar.INSTANCE.toBytes("v1")), ptr);

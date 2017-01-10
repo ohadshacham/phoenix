@@ -21,7 +21,7 @@ import org.apache.hadoop.io.WritableUtils;
 import org.apache.phoenix.expression.visitor.ExpressionVisitor;
 import org.apache.phoenix.schema.tuple.Tuple;
 import org.apache.phoenix.schema.types.PArrayDataType;
-import org.apache.phoenix.schema.types.PArrayDataType.PArrayDataTypeBytesArrayBuilder;
+import org.apache.phoenix.schema.types.PArrayDataTypeEncoder;
 import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.TrustedByteArrayOutputStream;
@@ -35,38 +35,26 @@ public class ArrayConstructorExpression extends BaseCompoundExpression {
     private Object[] elements;
     private final ImmutableBytesWritable valuePtr = new ImmutableBytesWritable();
     private int estimatedSize = 0;
-    // store the offset postion in this.  Later based on the total size move this to a byte[]
-    // and serialize into byte stream
-    private int[] offsetPos;
     private boolean rowKeyOrderOptimizable;
-    private byte serializationVersion;
     
     public ArrayConstructorExpression() {
     }
 
     public ArrayConstructorExpression(List<Expression> children, PDataType baseType, boolean rowKeyOrderOptimizable) {
-    	this(children, baseType, rowKeyOrderOptimizable, PArrayDataType.SORTABLE_SERIALIZATION_VERSION);
-    }
-    
-    public ArrayConstructorExpression(List<Expression> children, PDataType baseType, boolean rowKeyOrderOptimizable, byte serializationVersion) {
         super(children);
-        init(baseType, rowKeyOrderOptimizable, serializationVersion);
+        init(baseType, rowKeyOrderOptimizable);
     }
 
     public ArrayConstructorExpression clone(List<Expression> children) {
-        return new ArrayConstructorExpression(children, this.baseType, this.rowKeyOrderOptimizable, PArrayDataType.SORTABLE_SERIALIZATION_VERSION);
+        return new ArrayConstructorExpression(children, this.baseType, this.rowKeyOrderOptimizable);
     }
     
-    private void init(PDataType baseType, boolean rowKeyOrderOptimizable, byte serializationVersion) {
+    private void init(PDataType baseType, boolean rowKeyOrderOptimizable) {
         this.baseType = baseType;
         this.rowKeyOrderOptimizable = rowKeyOrderOptimizable;
         elements = new Object[getChildren().size()];
         valuePtr.set(ByteUtil.EMPTY_BYTE_ARRAY);
         estimatedSize = PArrayDataType.estimateSize(this.children.size(), this.baseType);
-        if (!this.baseType.isFixedWidth()) {
-            offsetPos = new int[children.size()];
-        }
-        this.serializationVersion = serializationVersion;
     }
 
     @Override
@@ -90,37 +78,24 @@ public class ArrayConstructorExpression extends BaseCompoundExpression {
         }
         TrustedByteArrayOutputStream byteStream = new TrustedByteArrayOutputStream(estimatedSize);
         DataOutputStream oStream = new DataOutputStream(byteStream);
-        PArrayDataTypeBytesArrayBuilder builder =
-                new PArrayDataTypeBytesArrayBuilder(byteStream, oStream, children.size(), baseType, getSortOrder(), rowKeyOrderOptimizable, serializationVersion);
-        try {
-            for (int i = position >= 0 ? position : 0; i < elements.length; i++) {
-                Expression child = children.get(i);
-                if (!child.evaluate(tuple, ptr)) {
-                    if (tuple != null && !tuple.isImmutable()) {
-                        if (position >= 0) position = i;
-                        return false;
-                    }
-                    else {
-                        // its possible for the expression to evaluate to null if the serialization format is immutable and the data type is variable length
-                        builder.appendMissingElement();
-                    }
-                } else {
-                    builder.appendElem(ptr.get(), ptr.getOffset(), ptr.getLength());
+        PArrayDataTypeEncoder builder =
+                new PArrayDataTypeEncoder(byteStream, oStream, children.size(), baseType, getSortOrder(), rowKeyOrderOptimizable, PArrayDataType.SORTABLE_SERIALIZATION_VERSION);
+        for (int i = position >= 0 ? position : 0; i < elements.length; i++) {
+            Expression child = children.get(i);
+            if (!child.evaluate(tuple, ptr)) {
+                if (tuple != null && !tuple.isImmutable()) {
+                    if (position >= 0) position = i;
+                    return false;
                 }
-            }
-            if (position >= 0) position = elements.length;
-            byte[] bytes = builder.getBytesAndClose();
-            ptr.set(bytes, 0, bytes.length);
-            valuePtr.set(ptr.get(), ptr.getOffset(), ptr.getLength());
-            return true;
-        } finally {
-            try {
-                byteStream.close();
-                oStream.close();
-            } catch (IOException e) {
-                // Should not happen
+            } else {
+                builder.appendValue(ptr.get(), ptr.getOffset(), ptr.getLength());
             }
         }
+        if (position >= 0) position = elements.length;
+        byte[] bytes = builder.encode();
+        ptr.set(bytes, 0, bytes.length);
+        valuePtr.set(ptr.get(), ptr.getOffset(), ptr.getLength());
+        return true;
     }
 
 
@@ -133,8 +108,7 @@ public class ArrayConstructorExpression extends BaseCompoundExpression {
             rowKeyOrderOptimizable = true;
             baseTypeOrdinal = -(baseTypeOrdinal+1);
         }
-        byte serializationVersion = input.readByte();
-        init(PDataType.values()[baseTypeOrdinal], rowKeyOrderOptimizable, serializationVersion);
+        init(PDataType.values()[baseTypeOrdinal], rowKeyOrderOptimizable);
     }
 
     @Override
@@ -145,7 +119,6 @@ public class ArrayConstructorExpression extends BaseCompoundExpression {
         } else {
             WritableUtils.writeVInt(output, baseType.ordinal());
         }
-        output.write(serializationVersion);
     }
     
     @Override

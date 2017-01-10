@@ -52,6 +52,7 @@ import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.query.QueryServices;
 import org.apache.phoenix.query.QueryServicesOptions;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTableImpl;
 import org.apache.phoenix.schema.PTableKey;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.stats.GuidePostsKey;
@@ -86,17 +87,20 @@ public class StatsCollectorIT extends BaseUniqueNamesOwnClusterIT {
         if (transactional) {
             sb.append("TRANSACTIONAL=true");
         }
-        if (columnEncoded) {
+        if (!columnEncoded) {
             if (sb.length()>0) {
                 sb.append(",");
             }
-            sb.append("COLUMN_ENCODED_BYTES=4");
+            sb.append("COLUMN_ENCODED_BYTES=0");
         }
         if (!mutable) {
             if (sb.length()>0) {
                 sb.append(",");
             }
             sb.append("IMMUTABLE_ROWS=true");
+            if (!columnEncoded) {
+                sb.append(",IMMUTABLE_STORAGE_SCHEME="+PTableImpl.ImmutableStorageScheme.ONE_CELL_PER_COLUMN);
+            }
         }
         this.tableDDLOptions = sb.toString();
         this.userTableNamespaceMapped = userTableNamespaceMapped;
@@ -184,7 +188,7 @@ public class StatsCollectorIT extends BaseUniqueNamesOwnClusterIT {
         rs = conn.createStatement().executeQuery("EXPLAIN SELECT v2 FROM " + fullTableName + " WHERE v2='foo'");
         explainPlan = QueryUtil.getExplainPlan(rs);
         // if we are using the ONE_CELL_PER_COLUMN_FAMILY storage scheme, we will have the single kv even though there are no values for col family v2 
-        String stats = columnEncoded && !mutable  ? "4-CHUNK 1 ROWS 58 BYTES" : "3-CHUNK 0 ROWS 0 BYTES";
+        String stats = columnEncoded && !mutable  ? "4-CHUNK 1 ROWS 38 BYTES" : "3-CHUNK 0 ROWS 0 BYTES";
         assertEquals(
                 "CLIENT " + stats + " PARALLEL 3-WAY FULL SCAN OVER " + physicalTableName + "\n" +
                 "    SERVER FILTER BY B.V2 = 'foo'\n" + 
@@ -533,7 +537,7 @@ public class StatsCollectorIT extends BaseUniqueNamesOwnClusterIT {
         List<KeyRange> keyRanges = getAllSplits(conn, fullTableName);
         assertEquals(26, keyRanges.size());
         rs = conn.createStatement().executeQuery("EXPLAIN SELECT * FROM " + fullTableName);
-        assertEquals("CLIENT 26-CHUNK 25 ROWS " + (columnEncoded ? ( mutable ? "12530" : "14422" ) : "12420") + " BYTES PARALLEL 1-WAY FULL SCAN OVER " + physicalTableName,
+        assertEquals("CLIENT 26-CHUNK 25 ROWS " + (columnEncoded ? ( mutable ? "12530" : "13902" ) : "12420") + " BYTES PARALLEL 1-WAY FULL SCAN OVER " + physicalTableName,
                 QueryUtil.getExplainPlan(rs));
 
         ConnectionQueryServices services = conn.unwrap(PhoenixConnection.class).getQueryServices();
@@ -557,25 +561,25 @@ public class StatsCollectorIT extends BaseUniqueNamesOwnClusterIT {
         assertTrue(rs.next());
         assertEquals("A", rs.getString(1));
         assertEquals(24, rs.getInt(2));
-        assertEquals(columnEncoded ? ( mutable ? 12252 : 14144 ) : 12144, rs.getInt(3));
+        assertEquals(columnEncoded ? ( mutable ? 12252 : 13624 ) : 12144, rs.getInt(3));
         assertEquals(oneCellPerColFamliyStorageScheme ? 12 : 11, rs.getInt(4));
 
         assertTrue(rs.next());
         assertEquals("B", rs.getString(1));
         assertEquals(oneCellPerColFamliyStorageScheme ? 24 : 20, rs.getInt(2));
-        assertEquals(columnEncoded ? ( mutable ? 5600 : 7492 ) : 5540, rs.getInt(3));
+        assertEquals(columnEncoded ? ( mutable ? 5600 : 6972 ) : 5540, rs.getInt(3));
         assertEquals(oneCellPerColFamliyStorageScheme ? 6 : 5, rs.getInt(4));
 
         assertTrue(rs.next());
         assertEquals("C", rs.getString(1));
         assertEquals(24, rs.getInt(2));
-        assertEquals(columnEncoded ? ( mutable ? 6724 : 7516 ) : 6652, rs.getInt(3));
+        assertEquals(columnEncoded ? ( mutable ? 6724 : 6988 ) : 6652, rs.getInt(3));
         assertEquals(6, rs.getInt(4));
 
         assertTrue(rs.next());
         assertEquals("D", rs.getString(1));
         assertEquals(24, rs.getInt(2));
-        assertEquals(columnEncoded ? ( mutable ? 6724 : 7516 ) : 6652, rs.getInt(3));
+        assertEquals(columnEncoded ? ( mutable ? 6724 : 6988 ) : 6652, rs.getInt(3));
         assertEquals(6, rs.getInt(4));
 
         assertFalse(rs.next());
@@ -620,7 +624,7 @@ public class StatsCollectorIT extends BaseUniqueNamesOwnClusterIT {
             int startIndex = r.nextInt(strings.length);
             int endIndex = r.nextInt(strings.length - startIndex) + startIndex;
             long rows = endIndex - startIndex;
-            long c2Bytes = rows * (columnEncoded ? ( mutable ? 37 : 70 ) : 35);
+            long c2Bytes = rows * (columnEncoded ? ( mutable ? 37 : 48 ) : 35);
             String physicalTableName = SchemaUtil.getPhysicalHBaseTableName(fullTableName, userTableNamespaceMapped, PTableType.TABLE).getString();
             rs = conn.createStatement().executeQuery(
                     "SELECT COLUMN_FAMILY,SUM(GUIDE_POSTS_ROW_COUNT),SUM(GUIDE_POSTS_WIDTH) from SYSTEM.STATS where PHYSICAL_NAME = '"

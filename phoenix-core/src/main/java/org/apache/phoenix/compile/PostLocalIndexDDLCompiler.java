@@ -31,7 +31,7 @@ import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixStatement;
 import org.apache.phoenix.jdbc.PhoenixStatement.Operation;
 import org.apache.phoenix.schema.PTable;
-import org.apache.phoenix.schema.PTable.StorageScheme;
+import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
 import org.apache.phoenix.schema.SortOrder;
 import org.apache.phoenix.schema.TableRef;
 import org.apache.phoenix.schema.tuple.Tuple;
@@ -83,7 +83,7 @@ public class PostLocalIndexDDLCompiler {
             // However, in this case, we need to project all of the data columns that contribute to the index.
             IndexMaintainer indexMaintainer = index.getIndexMaintainer(dataTable, connection);
             for (ColumnReference columnRef : indexMaintainer.getAllColumns()) {
-                if (index.getStorageScheme() == StorageScheme.ONE_CELL_PER_COLUMN_FAMILY) {
+                if (index.getImmutableStorageScheme() == ImmutableStorageScheme.SINGLE_CELL_ARRAY_WITH_OFFSETS) {
                     scan.addFamily(columnRef.getFamily());
                 } else {
                     scan.addColumn(columnRef.getFamily(), columnRef.getQualifier());

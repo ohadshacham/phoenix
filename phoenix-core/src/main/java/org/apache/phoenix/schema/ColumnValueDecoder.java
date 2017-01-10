@@ -15,17 +15,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.phoenix.expression.visitor;
+package org.apache.phoenix.schema;
 
-import java.util.List;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 
-import org.apache.phoenix.expression.Determinism;
-import org.apache.phoenix.expression.Expression;
-
-public class CloneNonDeterministicExpressionVisitor extends CloneExpressionVisitor {
-
-    @Override
-    public boolean isCloneNode(Expression node, List<Expression> children) {
-        return Determinism.PER_INVOCATION.compareTo(node.getDeterminism()) <= 0;
-    }
+/**
+ * Interface to decode column values that are stored in a byte[] 
+ */
+public interface ColumnValueDecoder {
+    /**
+     * sets the ptr to the column value at the given index  
+     * @return false if the column value is absent (used to support DEFAULT expressions) or else true 
+     */
+    boolean decode(ImmutableBytesWritable ptr, int index);
 }

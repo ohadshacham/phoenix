@@ -2722,7 +2722,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                             metaConnection,
                             PhoenixDatabaseMetaData.SYSTEM_CATALOG,
                             MetaDataProtocol.MIN_SYSTEM_TABLE_TIMESTAMP_4_10_0 - 2,
-                            PhoenixDatabaseMetaData.STORAGE_SCHEME + " "
+                            PhoenixDatabaseMetaData.IMMUTABLE_STORAGE_SCHEME + " "
                                     + PTinyint.INSTANCE.getSqlTypeName());
                     metaConnection = addColumnsIfNotExists(
                             metaConnection,

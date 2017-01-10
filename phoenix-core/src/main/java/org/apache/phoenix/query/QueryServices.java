@@ -228,6 +228,7 @@ public interface QueryServices extends SQLCloseable {
     public static final String AUTO_UPGRADE_ENABLED = "phoenix.autoupgrade.enabled";
     
     public static final String DEFAULT_COLUMN_ENCODED_BYTES_ATRRIB  = "phoenix.default.column.encoded.bytes.attrib";
+    public static final String DEFAULT_IMMUTABLE_STORAGE_SCHEME_ATTRIB  = "phoenix.default.immutable.storage.scheme";
     /**
      * Get executor service used for parallel scans
      */

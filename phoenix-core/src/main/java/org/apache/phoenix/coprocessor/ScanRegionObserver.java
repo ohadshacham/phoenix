@@ -17,8 +17,8 @@
  */
 package org.apache.phoenix.coprocessor;
 
-import static org.apache.phoenix.util.EncodedColumnsUtil.getEncodingScheme;
 import static org.apache.phoenix.util.EncodedColumnsUtil.getMinMaxQualifiersFromScan;
+import static org.apache.phoenix.util.EncodedColumnsUtil.getQualifierEncodingScheme;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -130,7 +130,7 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
                 orderByExpression.readFields(input);
                 orderByExpressions.add(orderByExpression);
             }
-            QualifierEncodingScheme encodingScheme = getEncodingScheme(scan);
+            QualifierEncodingScheme encodingScheme = EncodedColumnsUtil.getQualifierEncodingScheme(scan);
             ResultIterator inner = new RegionScannerResultIterator(s, EncodedColumnsUtil.getMinMaxQualifiersFromScan(scan), encodingScheme);
             return new OrderedResultIterator(inner, orderByExpressions, thresholdBytes, limit >= 0 ? limit : null, null,
                     estimatedRowSize);
@@ -238,7 +238,7 @@ public class ScanRegionObserver extends BaseScannerRegionObserver {
         }
         if (scanOffset != null) {
             innerScanner = getOffsetScanner(c, innerScanner,
-                    new OffsetResultIterator(new RegionScannerResultIterator(innerScanner, getMinMaxQualifiersFromScan(scan), getEncodingScheme(scan)), scanOffset),
+                    new OffsetResultIterator(new RegionScannerResultIterator(innerScanner, getMinMaxQualifiersFromScan(scan), getQualifierEncodingScheme(scan)), scanOffset),
                     scan.getAttribute(QueryConstants.LAST_SCAN) != null);
         }
         final OrderedResultIterator iterator = deserializeFromScan(scan, innerScanner);
