@@ -317,7 +317,7 @@ public class MetaDataClient {
                     TABLE_NAME + "," +
                     TABLE_SEQ_NUM  +
                     ") VALUES (?, ?, ?, ?)";
-    private static final String MUTATE_TABLE =
+    public static final String MUTATE_TABLE =
             "UPSERT INTO " + SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_CATALOG_TABLE + "\"( " +
                     TENANT_ID + "," +
                     TABLE_SCHEM + "," +
