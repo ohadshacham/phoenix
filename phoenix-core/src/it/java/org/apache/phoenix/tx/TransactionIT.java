@@ -263,7 +263,8 @@ public class TransactionIT extends ParallelStatsDisabledIT {
         conn.createStatement().execute("UPSERT INTO " + nonTxTableName + " VALUES (3, 'b')");
         conn.commit();
         
-        conn.createStatement().execute("CREATE INDEX IDX ON " + nonTxTableName + "(v)");
+        String index = generateUniqueName();
+        conn.createStatement().execute("CREATE INDEX " + index + " ON " + nonTxTableName + "(v)");
         // Reset empty column value to an empty value like it is pre-transactions
         HTableInterface htable = conn.unwrap(PhoenixConnection.class).getQueryServices().getTable(Bytes.toBytes( nonTxTableName));
         List<Put>puts = Lists.newArrayList(new Put(PInteger.INSTANCE.toBytes(1)), new Put(PInteger.INSTANCE.toBytes(2)), new Put(PInteger.INSTANCE.toBytes(3)));
@@ -276,7 +277,7 @@ public class TransactionIT extends ParallelStatsDisabledIT {
         
         htable = conn.unwrap(PhoenixConnection.class).getQueryServices().getTable(Bytes.toBytes( nonTxTableName));
         assertTrue(htable.getTableDescriptor().getCoprocessors().contains(PhoenixTransactionalProcessor.class.getName()));
-        htable = conn.unwrap(PhoenixConnection.class).getQueryServices().getTable(Bytes.toBytes("IDX"));
+        htable = conn.unwrap(PhoenixConnection.class).getQueryServices().getTable(Bytes.toBytes(index));
         assertTrue(htable.getTableDescriptor().getCoprocessors().contains(PhoenixTransactionalProcessor.class.getName()));
 
         conn.createStatement().execute("UPSERT INTO " + nonTxTableName + " VALUES (4, 'c')");
@@ -289,7 +290,7 @@ public class TransactionIT extends ParallelStatsDisabledIT {
         
         conn.createStatement().execute("UPSERT INTO " + nonTxTableName + " VALUES (5, 'd')");
         rs = conn.createStatement().executeQuery("SELECT k FROM " + nonTxTableName);
-        assertTrue(conn.unwrap(PhoenixConnection.class).getTable(new PTableKey(null, "IDX")).isTransactional());
+        assertTrue(conn.unwrap(PhoenixConnection.class).getTable(new PTableKey(null, index)).isTransactional());
         assertTrue(rs.next());
         assertEquals(1,rs.getInt(1));
         assertTrue(rs.next());
