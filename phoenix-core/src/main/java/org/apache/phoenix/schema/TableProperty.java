@@ -147,7 +147,7 @@ public enum TableProperty {
 	    
 	},
 	
-	COLUMN_ENCODED_BYTES(PhoenixDatabaseMetaData.COLUMN_ENCODED_BYTES, COLUMN_FAMILY_NOT_ALLOWED_TABLE_PROPERTY, false, false, false) {
+	COLUMN_ENCODED_BYTES(PhoenixDatabaseMetaData.ENCODING_SCHEME, COLUMN_FAMILY_NOT_ALLOWED_TABLE_PROPERTY, false, false, false) {
 	    @Override
         public Object getValue(Object value) {
 	        if (value instanceof String) {
