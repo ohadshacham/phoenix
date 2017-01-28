@@ -366,6 +366,7 @@ public class MetaDataClient {
                     COLUMN_QUALIFIER + ", " +
                     IS_ROW_TIMESTAMP +
                     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
     private static final String INSERT_COLUMN_ALTER_TABLE =
             "UPSERT INTO " + SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_CATALOG_TABLE + "\"( " +
                     TENANT_ID + "," +
@@ -388,6 +389,35 @@ public class MetaDataClient {
                     COLUMN_DEF + "," +
                     COLUMN_QUALIFIER +
                     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
+    /*
+     * Custom sql to add a column to SYSTEM.CATALOG table during upgrade.
+     * We can't use the regular INSERT_COLUMN_ALTER_TABLE sql because the COLUMN_QUALIFIER column
+     * was added in 4.10. And so if upgrading from let's say 4.7, we won't be able to
+     * find the COLUMN_QUALIFIER column which the INSERT_COLUMN_ALTER_TABLE sql expects.
+     */
+    private static final String ALTER_SYSCATALOG_TABLE_UPGRADE =
+            "UPSERT INTO " + SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_CATALOG_TABLE + "\"( " +
+                    TENANT_ID + "," +
+                    TABLE_SCHEM + "," +
+                    TABLE_NAME + "," +
+                    COLUMN_NAME + "," +
+                    COLUMN_FAMILY + "," +
+                    DATA_TYPE + "," +
+                    NULLABLE + "," +
+                    COLUMN_SIZE + "," +
+                    DECIMAL_DIGITS + "," +
+                    ORDINAL_POSITION + "," +
+                    SORT_ORDER + "," +
+                    DATA_TABLE_NAME + "," + // write this both in the column and table rows for access by metadata APIs
+                    ARRAY_SIZE + "," +
+                    VIEW_CONSTANT + "," +
+                    IS_VIEW_REFERENCED + "," +
+                    PK_NAME + "," +  // write this both in the column and table rows for access by metadata APIs
+                    KEY_SEQ + "," +
+                    COLUMN_DEF +
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+
     private static final String UPDATE_COLUMN_POSITION =
             "UPSERT INTO " + SYSTEM_CATALOG_SCHEMA + ".\"" + SYSTEM_CATALOG_TABLE + "\" ( " +
                     TENANT_ID + "," +
@@ -834,10 +864,12 @@ public class MetaDataClient {
         } else {
             colUpsert.setString(18, column.getExpressionStr());
         }
-        if (column.getColumnQualifierBytes() == null) {
-            colUpsert.setNull(19, Types.VARBINARY);
-        } else {
-            colUpsert.setBytes(19, column.getColumnQualifierBytes());
+        if (colUpsert.getParameterMetaData().getParameterCount() > 18) {
+            if (column.getColumnQualifierBytes() == null) {
+                colUpsert.setNull(19, Types.VARBINARY);
+            } else {
+                colUpsert.setBytes(19, column.getColumnQualifierBytes());
+            }
         }
         if (colUpsert.getParameterMetaData().getParameterCount() > 19) {
             colUpsert.setBoolean(20, column.isRowTimestamp());
@@ -2146,7 +2178,7 @@ public class MetaDataClient {
                 Integer encodedCQ =  isPkColumn ? null : cqCounter.getNextQualifier(cqCounterFamily);
                 byte[] columnQualifierBytes = null;
                 try {
-                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme);
+                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme, isPkColumn);
                 }
                 catch (QualifierOutOfRangeException e) {
                     throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
@@ -3187,8 +3219,11 @@ public class MetaDataClient {
                 Map<String, Integer> changedCqCounters = new HashMap<>(numCols);
                 if (numCols > 0 ) {
                     StatementContext context = new StatementContext(new PhoenixStatement(connection), resolver);
-                    //TODO: samarth should these be guarded by storage scheme check. Better to have the map always available. immutable empty for views and non encoded.
-                    try (PreparedStatement colUpsert = connection.prepareStatement(INSERT_COLUMN_ALTER_TABLE)) {
+                    String addColumnSqlToUse = connection.isRunningUpgrade()
+                            && tableName.equals(PhoenixDatabaseMetaData.SYSTEM_CATALOG_TABLE)
+                            && schemaName.equals(PhoenixDatabaseMetaData.SYSTEM_CATALOG_SCHEMA) ? ALTER_SYSCATALOG_TABLE_UPGRADE
+                            : INSERT_COLUMN_ALTER_TABLE;
+                    try (PreparedStatement colUpsert = connection.prepareStatement(addColumnSqlToUse)) {
                         short nextKeySeq = SchemaUtil.getMaxKeySeq(table);
                         for( ColumnDef colDef : columnDefs) {
                             if (colDef != null && !colDef.isNull()) {
@@ -3233,7 +3268,7 @@ public class MetaDataClient {
                             }
                             byte[] columnQualifierBytes = null;
                             try {
-                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table);
+                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table, colDef.isPK());
                             }
                             catch (QualifierOutOfRangeException e) {
                                 throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
