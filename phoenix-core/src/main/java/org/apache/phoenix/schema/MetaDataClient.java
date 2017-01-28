@@ -2178,7 +2178,7 @@ public class MetaDataClient {
                 Integer encodedCQ =  isPkColumn ? null : cqCounter.getNextQualifier(cqCounterFamily);
                 byte[] columnQualifierBytes = null;
                 try {
-                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme, isPkColumn);
+                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme);
                 }
                 catch (QualifierOutOfRangeException e) {
                     throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
@@ -3268,7 +3268,7 @@ public class MetaDataClient {
                             }
                             byte[] columnQualifierBytes = null;
                             try {
-                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table, colDef.isPK());
+                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table);
                             }
                             catch (QualifierOutOfRangeException e) {
                                 throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
