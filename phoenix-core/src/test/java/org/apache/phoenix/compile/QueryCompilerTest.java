@@ -920,6 +920,25 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
         }
     }
 
+    @Test
+    public void testAggregateOnColumnsNotInGroupByForImmutableEncodedTable() throws Exception {
+        String tableName = generateUniqueName();
+        String ddl = "CREATE IMMUTABLE TABLE  " + tableName +
+                "  (a_string varchar not null, col1 integer, col2 integer" +
+                "  CONSTRAINT pk PRIMARY KEY (a_string))";
+        String query = "SELECT col1, max(a_string) from " + tableName + " group by col2";
+        try (Connection conn = DriverManager.getConnection(getUrl())) {
+            conn.createStatement().execute(ddl);
+            try {
+                PreparedStatement statement = conn.prepareStatement(query);
+                statement.executeQuery();
+                fail();
+            } catch (SQLException e) { // expected
+                assertEquals(SQLExceptionCode.AGGREGATE_WITH_NOT_GROUP_BY_COLUMN.getErrorCode(), e.getErrorCode());
+            }
+        }
+    }
+
     @Test 
     public void testRegexpSubstrSetScanKeys() throws Exception {
         // First test scan keys are set when the offset is 0 or 1. 

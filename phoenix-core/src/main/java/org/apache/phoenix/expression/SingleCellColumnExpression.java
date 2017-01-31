@@ -167,5 +167,15 @@ public class SingleCellColumnExpression extends KeyValueColumnExpression {
             return super.accept(visitor);
         }
     }
-    
+
+    @Override
+    public boolean equals(Object obj) {
+        return keyValueColumnExpression.equals(obj);
+    }
+
+    @Override
+    public int hashCode() {
+        return keyValueColumnExpression.hashCode();
+    }
+
 }
