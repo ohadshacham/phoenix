@@ -170,7 +170,8 @@ public class SingleCellColumnExpression extends KeyValueColumnExpression {
 
     @Override
     public boolean equals(Object obj) {
-        return keyValueColumnExpression.equals(obj);
+        if (obj.getClass() != SingleCellColumnExpression.class) return false;
+        return keyValueColumnExpression.equals(((SingleCellColumnExpression)obj).getKeyValueExpression());
     }
 
     @Override
