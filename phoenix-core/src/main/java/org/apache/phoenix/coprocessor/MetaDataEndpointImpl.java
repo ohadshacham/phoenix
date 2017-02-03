@@ -738,7 +738,6 @@ public class MetaDataEndpointImpl extends MetaDataProtocol implements Coprocesso
                         isRowTimestampKV.getValueArray(), isRowTimestampKV.getValueOffset(),
                         isRowTimestampKV.getValueLength()));
         
-        //TODO: samarth verify which case is the right one to use.
         boolean isPkColumn = famName == null || famName.getString() == null;
         Cell columnQualifierKV = colKeyValues[COLUMN_QUALIFIER_INDEX];
         // Older tables won't have column qualifier metadata present. To make things simpler, just set the
