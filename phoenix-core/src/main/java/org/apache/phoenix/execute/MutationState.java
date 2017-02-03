@@ -1191,7 +1191,7 @@ public class MutationState implements SQLCloseable {
             }
             mutation.setAttribute(PhoenixIndexCodec.INDEX_UUID, uuidValue);
             if (attribValue != null) {
-                mutation.setAttribute(PhoenixIndexCodec.INDEX_MD, attribValue);
+                mutation.setAttribute(PhoenixIndexCodec.INDEX_PROTO_MD, attribValue);
                 if (txState.length > 0) {
                     mutation.setAttribute(BaseScannerRegionObserver.TX_STATE, txState);
                 }

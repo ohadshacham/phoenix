@@ -66,11 +66,13 @@ public class EncodedColumnsUtil {
     }
     
     public static QualifierEncodingScheme getQualifierEncodingScheme(Scan s) {
-        return QualifierEncodingScheme.fromSerializedValue(s.getAttribute(BaseScannerRegionObserver.QUALIFIER_ENCODING_SCHEME)[0]);
+        // null check for backward compatibility
+        return s.getAttribute(BaseScannerRegionObserver.QUALIFIER_ENCODING_SCHEME) == null ? QualifierEncodingScheme.NON_ENCODED_QUALIFIERS : QualifierEncodingScheme.fromSerializedValue(s.getAttribute(BaseScannerRegionObserver.QUALIFIER_ENCODING_SCHEME)[0]);
     }
     
     public static ImmutableStorageScheme getImmutableStorageScheme(Scan s) {
-        return ImmutableStorageScheme.fromSerializedValue(s.getAttribute(BaseScannerRegionObserver.IMMUTABLE_STORAGE_ENCODING_SCHEME)[0]);
+        // null check for backward compatibility
+        return s.getAttribute(BaseScannerRegionObserver.IMMUTABLE_STORAGE_ENCODING_SCHEME) == null ? ImmutableStorageScheme.ONE_CELL_PER_COLUMN : ImmutableStorageScheme.fromSerializedValue(s.getAttribute(BaseScannerRegionObserver.IMMUTABLE_STORAGE_ENCODING_SCHEME)[0]);
     }
 
     /**
@@ -157,18 +159,19 @@ public class EncodedColumnsUtil {
         return toReturn;
     }
     
-    public static byte[] getColumnQualifierBytes(String columnName, Integer numberBasedQualifier, PTable table) {
+    public static byte[] getColumnQualifierBytes(String columnName, Integer numberBasedQualifier, PTable table, boolean isPk) {
         QualifierEncodingScheme encodingScheme = table.getEncodingScheme();
-        return getColumnQualifierBytes(columnName, numberBasedQualifier, encodingScheme);
+        return getColumnQualifierBytes(columnName, numberBasedQualifier, encodingScheme, isPk);
     }
     
-    public static byte[] getColumnQualifierBytes(String columnName, Integer numberBasedQualifier, QualifierEncodingScheme encodingScheme) {
-        if (encodingScheme == NON_ENCODED_QUALIFIERS) {
-            return Bytes.toBytes(columnName);
-        } else if (numberBasedQualifier != null) {
-            return encodingScheme.encode(numberBasedQualifier);
+    public static byte[] getColumnQualifierBytes(String columnName, Integer numberBasedQualifier, QualifierEncodingScheme encodingScheme, boolean isPk) {
+        if (isPk) {
+            return null;
         }
-        return null;
+        if (encodingScheme == null || encodingScheme == NON_ENCODED_QUALIFIERS) {
+            return Bytes.toBytes(columnName);
+        }
+        return encodingScheme.encode(numberBasedQualifier);
     }
     
     public static Expression[] createColumnExpressionArray(int maxEncodedColumnQualifier) {

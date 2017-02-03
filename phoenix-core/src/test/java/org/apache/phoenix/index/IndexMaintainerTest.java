@@ -109,7 +109,7 @@ public class IndexMaintainerTest  extends BaseConnectionlessQueryTest {
             PTable index = pconn.getTable(new PTableKey(pconn.getTenantId(),fullIndexName));
             ImmutableBytesWritable ptr = new ImmutableBytesWritable();
             table.getIndexMaintainers(ptr, pconn);
-            List<IndexMaintainer> c1 = IndexMaintainer.deserialize(ptr, builder);
+            List<IndexMaintainer> c1 = IndexMaintainer.deserialize(ptr, builder, true);
             assertEquals(1,c1.size());
             IndexMaintainer im1 = c1.get(0);
             
@@ -310,7 +310,7 @@ public class IndexMaintainerTest  extends BaseConnectionlessQueryTest {
             PTable table = pconn.getTable(new PTableKey(pconn.getTenantId(), "FHA"));
             ImmutableBytesWritable ptr = new ImmutableBytesWritable();
             table.getIndexMaintainers(ptr, pconn);
-            List<IndexMaintainer> indexMaintainerList = IndexMaintainer.deserialize(ptr, GenericKeyValueBuilder.INSTANCE);
+            List<IndexMaintainer> indexMaintainerList = IndexMaintainer.deserialize(ptr, GenericKeyValueBuilder.INSTANCE, true);
             assertEquals(1,indexMaintainerList.size());
             IndexMaintainer indexMaintainer = indexMaintainerList.get(0);
             Set<ColumnReference> indexedColumns = indexMaintainer.getIndexedColumns();

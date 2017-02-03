@@ -84,6 +84,11 @@ abstract public class BaseScannerRegionObserver extends BaseRegionObserver {
     public static final String GROUP_BY_LIMIT = "_GroupByLimit";
     public static final String LOCAL_INDEX = "_LocalIndex";
     public static final String LOCAL_INDEX_BUILD = "_LocalIndexBuild";
+    /* 
+    * Attribute to denote that the index maintainer has been serialized using its proto-buf presentation.
+    * Needed for backward compatibility purposes. TODO: get rid of this in next major release.
+    */
+    public static final String LOCAL_INDEX_BUILD_PROTO = "_LocalIndexBuild"; 
     public static final String LOCAL_INDEX_JOIN_SCHEMA = "_LocalIndexJoinSchema";
     public static final String DATA_TABLE_COLUMNS_TO_JOIN = "_DataTableColumnsToJoin";
     public static final String COLUMNS_STORED_IN_SINGLE_CELL = "_ColumnsStoredInSingleCell";

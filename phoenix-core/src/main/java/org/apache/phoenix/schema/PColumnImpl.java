@@ -21,6 +21,7 @@ import org.apache.hadoop.hbase.util.ByteStringer;
 import org.apache.phoenix.coprocessor.generated.PTableProtos;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.schema.types.PDataType;
+import org.apache.phoenix.util.SchemaUtil;
 import org.apache.phoenix.util.SizedUtil;
 
 import com.google.common.base.Preconditions;
@@ -210,6 +211,10 @@ public class PColumnImpl implements PColumn {
     
     @Override
     public byte[] getColumnQualifierBytes() {
+        // Needed for backward compatibility
+        if (!SchemaUtil.isPKColumn(this) && columnQualifierBytes == null) {
+            return this.name.getBytes();
+        }
         return columnQualifierBytes;
     }
 

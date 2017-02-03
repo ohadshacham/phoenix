@@ -78,7 +78,7 @@ public class PostLocalIndexDDLCompiler {
             // rows per region as a result. The value of the attribute will be our persisted
             // index maintainers.
             // Define the LOCAL_INDEX_BUILD as a new static in BaseScannerRegionObserver
-            scan.setAttribute(BaseScannerRegionObserver.LOCAL_INDEX_BUILD, ByteUtil.copyKeyBytesIfNecessary(ptr));
+            scan.setAttribute(BaseScannerRegionObserver.LOCAL_INDEX_BUILD_PROTO, ByteUtil.copyKeyBytesIfNecessary(ptr));
             // By default, we'd use a FirstKeyOnly filter as nothing else needs to be projected for count(*).
             // However, in this case, we need to project all of the data columns that contribute to the index.
             IndexMaintainer indexMaintainer = index.getIndexMaintainer(dataTable, connection);

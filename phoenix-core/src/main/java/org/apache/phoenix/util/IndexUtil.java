@@ -181,6 +181,11 @@ public class IndexUtil {
                 : QueryConstants.LOCAL_INDEX_COLUMN_FAMILY_PREFIX + dataColumnFamilyName;
     }
     
+    public static byte[] getLocalIndexColumnFamily(byte[] dataColumnFamilyBytes) {
+        String dataCF = Bytes.toString(dataColumnFamilyBytes);
+        return getLocalIndexColumnFamily(dataCF).getBytes();
+    }
+    
     public static PColumn getDataColumn(PTable dataTable, String indexColumnName) {
         int pos = indexColumnName.indexOf(INDEX_COLUMN_NAME_SEP);
         if (pos < 0) {

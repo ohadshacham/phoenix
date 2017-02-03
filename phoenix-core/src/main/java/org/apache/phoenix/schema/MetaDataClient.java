@@ -156,6 +156,7 @@ import org.apache.phoenix.execute.MutationState;
 import org.apache.phoenix.expression.Determinism;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.RowKeyColumnExpression;
+import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
@@ -2178,7 +2179,7 @@ public class MetaDataClient {
                 Integer encodedCQ =  isPkColumn ? null : cqCounter.getNextQualifier(cqCounterFamily);
                 byte[] columnQualifierBytes = null;
                 try {
-                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme);
+                    columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(columnDefName.getColumnName(), encodedCQ, encodingScheme, isPkColumn);
                 }
                 catch (QualifierOutOfRangeException e) {
                     throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
@@ -3268,7 +3269,7 @@ public class MetaDataClient {
                             }
                             byte[] columnQualifierBytes = null;
                             try {
-                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table);
+                                columnQualifierBytes = EncodedColumnsUtil.getColumnQualifierBytes(colDef.getColumnDefName().getColumnName(), encodedCQ, table, colDef.isPK());
                             }
                             catch (QualifierOutOfRangeException e) {
                                 throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_COLUMNS_EXCEEDED)
@@ -3604,9 +3605,11 @@ public class MetaDataClient {
                     // get the covered columns 
                     List<PColumn> indexColumnsToDrop = Lists.newArrayListWithExpectedSize(columnRefs.size());
                     Set<Pair<String, String>> indexedColsInfo = indexMaintainer.getIndexedColumnInfo();
-                    Set<Pair<String, String>> coveredColsInfo = indexMaintainer.getCoveredColumnInfo();
+                    Set<ColumnReference> coveredCols = indexMaintainer.getCoveredColumns();
                     for(PColumn columnToDrop : tableColumnsToDrop) {
                         Pair<String, String> columnToDropInfo = new Pair<>(columnToDrop.getFamilyName().getString(), columnToDrop.getName().getString());
+                        ColumnReference colDropRef = new ColumnReference(columnToDrop.getFamilyName() == null ? null
+                                : columnToDrop.getFamilyName().getBytes(), columnToDrop.getColumnQualifierBytes());
                         boolean isColumnIndexed = indexedColsInfo.contains(columnToDropInfo);
                         if (isColumnIndexed) {
                             if (index.getViewIndexId() == null) { 
@@ -3614,8 +3617,7 @@ public class MetaDataClient {
                             }
                             connection.removeTable(tenantId, SchemaUtil.getTableName(schemaName, index.getName().getString()), index.getParentName() == null ? null : index.getParentName().getString(), index.getTimeStamp());
                             removedIndexTableOrColumn = true;
-                        }
-                        else if (coveredColsInfo.contains(columnToDropInfo)) {
+                        } else if (coveredCols.contains(colDropRef)) {
                             String indexColumnName = IndexUtil.getIndexColumnName(columnToDrop);
                             PColumn indexColumn = index.getPColumnForColumnName(indexColumnName);
                             indexColumnsToDrop.add(indexColumn);

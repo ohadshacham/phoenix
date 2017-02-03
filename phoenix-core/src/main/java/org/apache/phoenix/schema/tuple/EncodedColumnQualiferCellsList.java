@@ -361,6 +361,11 @@ public class EncodedColumnQualiferCellsList implements List<Cell> {
         return getCellForColumnQualifier(columnQualifier);
     }
     
+    public Cell getCellForColumnQualifier(byte[] qualifierBytes, int offset, int length) {
+        int columnQualifier = encodingScheme.decode(qualifierBytes, offset, length);
+        return getCellForColumnQualifier(columnQualifier);
+    }
+    
     private Cell getCellForColumnQualifier(int columnQualifier) {
         checkQualifierRange(columnQualifier);
         int idx = getArrayIndex(columnQualifier);

@@ -184,7 +184,7 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
     private void commitBatch(HRegion region, List<Mutation> mutations, byte[] indexUUID, long blockingMemstoreSize,
             byte[] indexMaintainersPtr, byte[] txState) throws IOException {
         if (indexMaintainersPtr != null) {
-            mutations.get(0).setAttribute(PhoenixIndexCodec.INDEX_MD, indexMaintainersPtr);
+            mutations.get(0).setAttribute(PhoenixIndexCodec.INDEX_PROTO_MD, indexMaintainersPtr);
         }
 
         if (txState != null) {
@@ -294,8 +294,13 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
             }
             values = new byte[projectedTable.getPKColumns().size()][];
         }
-        byte[] localIndexBytes = scan.getAttribute(LOCAL_INDEX_BUILD);
-        List<IndexMaintainer> indexMaintainers = localIndexBytes == null ? null : IndexMaintainer.deserialize(localIndexBytes);
+        boolean useProto = false;
+        byte[] localIndexBytes = scan.getAttribute(LOCAL_INDEX_BUILD_PROTO);
+        useProto = localIndexBytes != null;
+        if (localIndexBytes == null) {
+            localIndexBytes = scan.getAttribute(LOCAL_INDEX_BUILD);
+        }
+        List<IndexMaintainer> indexMaintainers = localIndexBytes == null ? null : IndexMaintainer.deserialize(localIndexBytes, useProto);
         List<Mutation> indexMutations = localIndexBytes == null ? Collections.<Mutation>emptyList() : Lists.<Mutation>newArrayListWithExpectedSize(1024);
         
         RegionScanner theScanner = s;
@@ -388,7 +393,11 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
         }
         long rowCount = 0;
         final RegionScanner innerScanner = theScanner;
-        byte[] indexMaintainersPtr = scan.getAttribute(PhoenixIndexCodec.INDEX_MD);
+        byte[] indexMaintainersPtr = scan.getAttribute(PhoenixIndexCodec.INDEX_PROTO_MD);
+        // for backward compatiblity fall back to look by the old attribute
+        if (indexMaintainersPtr == null) {
+            indexMaintainersPtr = scan.getAttribute(PhoenixIndexCodec.INDEX_MD);
+        }
         boolean acquiredLock = false;
         try {
             if(needToWrite) {
@@ -726,7 +735,13 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
     
     private RegionScanner rebuildIndices(final RegionScanner innerScanner, final HRegion region, final Scan scan,
             Configuration config) throws IOException {
-        byte[] indexMetaData = scan.getAttribute(PhoenixIndexCodec.INDEX_MD);
+        byte[] indexMetaData = scan.getAttribute(PhoenixIndexCodec.INDEX_PROTO_MD);
+        boolean useProto = true;
+        // for backward compatibility fall back to look up by the old attribute
+        if (indexMetaData == null) {
+            useProto = false;
+            indexMetaData = scan.getAttribute(PhoenixIndexCodec.INDEX_MD);
+        }
         boolean hasMore;
         long rowCount = 0;
         try {
@@ -746,7 +761,7 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
                             if (KeyValue.Type.codeToType(cell.getTypeByte()) == KeyValue.Type.Put) {
                                 if (put == null) {
                                     put = new Put(CellUtil.cloneRow(cell));
-                                    put.setAttribute(PhoenixIndexCodec.INDEX_MD, indexMetaData);
+                                    put.setAttribute(useProto ? PhoenixIndexCodec.INDEX_PROTO_MD : PhoenixIndexCodec.INDEX_MD, indexMetaData);
                                     put.setAttribute(PhoenixIndexCodec.INDEX_UUID, uuidValue);
                                     put.setAttribute(BaseScannerRegionObserver.IGNORE_NEWER_MUTATIONS,
                                             PDataType.TRUE_BYTES);
@@ -756,7 +771,7 @@ public class UngroupedAggregateRegionObserver extends BaseScannerRegionObserver 
                             } else {
                                 if (del == null) {
                                     del = new Delete(CellUtil.cloneRow(cell));
-                                    del.setAttribute(PhoenixIndexCodec.INDEX_MD, indexMetaData);
+                                    del.setAttribute(useProto ? PhoenixIndexCodec.INDEX_PROTO_MD : PhoenixIndexCodec.INDEX_MD, indexMetaData);
                                     del.setAttribute(PhoenixIndexCodec.INDEX_UUID, uuidValue);
                                     del.setAttribute(BaseScannerRegionObserver.IGNORE_NEWER_MUTATIONS,
                                             PDataType.TRUE_BYTES);

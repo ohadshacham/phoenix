@@ -371,7 +371,7 @@ public abstract class BaseQueryPlan implements QueryPlan {
         }
         ImmutableBytesWritable ptr = new ImmutableBytesWritable();
         IndexMaintainer.serialize(dataTable, ptr, indexes, context.getConnection());
-        scan.setAttribute(BaseScannerRegionObserver.LOCAL_INDEX_BUILD, ByteUtil.copyKeyBytesIfNecessary(ptr));
+        scan.setAttribute(BaseScannerRegionObserver.LOCAL_INDEX_BUILD_PROTO, ByteUtil.copyKeyBytesIfNecessary(ptr));
         if (dataTable.isTransactional()) {
             scan.setAttribute(BaseScannerRegionObserver.TX_STATE, context.getConnection().getMutationState().encodeTransaction());
         }
