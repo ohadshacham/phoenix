@@ -123,7 +123,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public void setAutoFlush(boolean autoFlush) {
         // TODO Auto-generated method stub
-
     }
 
     @Override
@@ -141,19 +140,16 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public void setWriteBufferSize(long writeBufferSize) throws IOException {
         // TODO Auto-generated method stub
-
     }
 
     @Override
     public void flushCommits() throws IOException {
         // TODO Auto-generated method stub
-
     }
 
     @Override
     public void close() throws IOException {
         // TODO Auto-generated method stub
-
     }
 
     @Override
@@ -173,13 +169,11 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public void setAutoFlush(boolean autoFlush, boolean clearBufferOnFail) {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
     public void setAutoFlushTo(boolean autoFlush) {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
@@ -204,7 +198,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public void batch(List<? extends Row> actions, Object[] results)
             throws IOException, InterruptedException {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
@@ -219,7 +212,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
             Object[] results, Callback<R> callback) throws IOException,
             InterruptedException {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
@@ -261,7 +253,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public void mutateRow(RowMutations rm) throws IOException {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
@@ -310,7 +301,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
             byte[] startKey, byte[] endKey, Call<T, R> callable,
             Callback<R> callback) throws ServiceException, Throwable {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
@@ -328,7 +318,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
             byte[] startKey, byte[] endKey, R responsePrototype,
             Callback<R> callback) throws ServiceException, Throwable {
         // TODO Auto-generated method stub
-        
     }
 
     @Override
