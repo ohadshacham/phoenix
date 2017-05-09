@@ -1,11 +1,51 @@
 package org.apache.phoenix.transaction;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
+import org.apache.phoenix.jdbc.PhoenixEmbeddedDriver.ConnectionInfo;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.util.ReadOnlyProps;
+import org.apache.twill.zookeeper.ZKClientService;
+import org.slf4j.Logger;
 
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.concurrent.TimeoutException;
 
 public interface PhoenixTransactionContext {
+
+    /**
+     * 
+     * Visibility levels needed for checkpointing and  
+     *
+     */
+    public enum PhoenixVisibilityLevel {
+        SNAPSHOT,
+        SNAPSHOT_EXCLUDE_CURRENT,
+        SNAPSHOT_ALL
+      }
+
+    public static final String TX_ROLLBACK_ATTRIBUTE_KEY = "tephra.tx.rollback"; //"phoenix.tx.rollback"; 
+
+    public static final String PROPERTY_TTL = "dataset.table.ttl";
+
+    public static final String READ_NON_TX_DATA = "data.tx.read.pre.existing";
+
+    /**
+     * Set the in memory client connection to the transaction manager (for testing purpose)
+     *
+     * @param config
+     */
+    public void setInMemoryTransactionClient(Configuration config);
+
+    /**
+     * Set the client connection to the transaction manager
+     *
+     * @param config
+     * @param props
+     * @param connectionInfo
+     */
+    public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props, ConnectionInfo connectionInfo);
 
     /**
      * Starts a transaction
@@ -43,8 +83,8 @@ public interface PhoenixTransactionContext {
      * @throws InterruptedException
      * @throws TimeoutException
      */
-    public void commitDDLFence(PTable dataTable)
-            throws SQLException, InterruptedException, TimeoutException;
+    public void commitDDLFence(PTable dataTable, Logger logger)
+            throws SQLException;
 
     /**
      * mark DML with table information for conflict detection of concurrent
@@ -74,10 +114,70 @@ public interface PhoenixTransactionContext {
     /**
      * Returns transaction unique identifier
      */
-    long getTransactionId();
+    public long getTransactionId();
 
     /**
      * Returns transaction snapshot id
      */
-    long getReadPointer();
+    public long getReadPointer();
+
+    /**
+     * Returns transaction write pointer. After checkpoint the write pointer is different than the initial one  
+     */
+    public long getWritePointer();
+
+    /**
+     * Set visibility level
+     */
+    public void setVisibilityLevel(PhoenixVisibilityLevel visibilityLevel);
+
+    /**
+     * Returns visibility level
+     */
+    public PhoenixVisibilityLevel getVisibilityLevel();
+
+    /**
+     * Encode transaction
+     */
+    public byte[] encodeTransaction() throws SQLException;
+
+    /**
+     * 
+     * @return max transactions per second
+     */
+    public long getMaxTransactionsPerSecond();
+
+    /**
+     *
+     * @param version
+     * @return
+     */
+    public boolean isPreExistingVersion(long version);
+
+    /**
+     *
+     * @return the coprocessor
+     */
+    public BaseRegionObserver getCoProcessor();
+
+    /**
+     * 
+     * @return the family delete marker
+     */
+    public byte[] get_famility_delete_marker(); 
+
+    /**
+     * Setup transaction manager's configuration for testing
+     */
+     public void setTxnConfigs(Configuration config, String tmpFolder, int defaultTxnTimeoutSeconds) throws IOException;
+
+    /**
+     * Setup transaction manager for testing
+     */
+    public void setupTxManager(Configuration config, String url) throws SQLException;
+
+    /**
+     * Tear down transaction manager for testing
+     */
+    public void tearDownTxManager();
 }

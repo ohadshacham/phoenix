@@ -1,9 +1,16 @@
 package org.apache.phoenix.transaction;
 
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.concurrent.TimeoutException;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
+import org.apache.phoenix.jdbc.PhoenixEmbeddedDriver.ConnectionInfo;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.util.ReadOnlyProps;
+import org.apache.twill.zookeeper.ZKClientService;
+import org.slf4j.Logger;
 
 public class OmidTransactionContext implements PhoenixTransactionContext {
 
@@ -32,8 +39,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
-    public void commitDDLFence(PTable dataTable) throws SQLException,
-            InterruptedException, TimeoutException {
+    public void commitDDLFence(PTable dataTable, Logger logger) throws SQLException {
         // TODO Auto-generated method stub
 
     }
@@ -74,4 +80,84 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         return 0;
     }
 
+    @Override
+    public long getWritePointer() {
+        // TODO Auto-generated method stub
+        return 0;
+    }
+
+    @Override
+    public PhoenixVisibilityLevel getVisibilityLevel() {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public void setVisibilityLevel(PhoenixVisibilityLevel visibilityLevel) {
+        // TODO Auto-generated method stub
+        
+    }
+
+    @Override
+    public byte[] encodeTransaction() throws SQLException {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public long getMaxTransactionsPerSecond() {
+        // TODO Auto-generated method stub
+        return 0;
+    }
+
+    @Override
+    public boolean isPreExistingVersion(long version) {
+        // TODO Auto-generated method stub
+        return false;
+    }
+
+    @Override
+    public BaseRegionObserver getCoProcessor() {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public void setInMemoryTransactionClient(Configuration config) {
+        // TODO Auto-generated method stub
+        
+    }
+
+    @Override
+    public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props,
+            ConnectionInfo connectionInfo) {
+        // TODO Auto-generated method stub
+        
+        return null;
+        
+    }
+
+    @Override
+    public byte[] get_famility_delete_marker() {
+        // TODO Auto-generated method stub
+        return null;
+    }
+
+    @Override
+    public void setTxnConfigs(Configuration config, String tmpFolder, int defaultTxnTimeoutSeconds) throws IOException {
+        // TODO Auto-generated method stub
+
+    }
+
+    @Override
+    public void setupTxManager(Configuration config, String url) throws SQLException {
+        // TODO Auto-generated method stub
+
+    }
+
+    @Override
+    public void tearDownTxManager() {
+        // TODO Auto-generated method stub
+
+    }
 }
