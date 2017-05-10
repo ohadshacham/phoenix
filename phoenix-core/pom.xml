@@ -232,6 +232,11 @@
   </build>
 
   <dependencies>
+  <dependency>
+  <groupId>org.apache.omid</groupId>
+  <artifactId>omid-hbase-client</artifactId>
+  <version>${omid.version}</version>
+  </dependency>
     <!-- Transaction dependencies -->
     <dependency>
       <groupId>org.apache.tephra</groupId>
