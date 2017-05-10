@@ -176,7 +176,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
-    public byte[] get_famility_delete_marker() {
+    public byte[] getFamilyDeleteMarker() {
         // TODO Auto-generated method stub
         return null;
     }
