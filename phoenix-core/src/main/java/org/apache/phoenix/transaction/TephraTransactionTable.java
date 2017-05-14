@@ -1,3 +1,20 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.phoenix.transaction;
 
 import java.io.IOException;
@@ -23,7 +40,10 @@ import org.apache.hadoop.hbase.client.coprocessor.Batch.Call;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Callback;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
+import org.apache.tephra.TxConstants;
 import org.apache.tephra.hbase.TransactionAwareHTable;
+import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTableType;
 
 import com.google.protobuf.Descriptors.MethodDescriptor;
 import com.google.protobuf.Message;
@@ -37,14 +57,22 @@ public class TephraTransactionTable implements PhoenixTransactionalTable {
     private TephraTransactionContext tephraTransactionContext;
 
     public TephraTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) {
+        this(ctx, hTable, null);
+    }
+
+    public TephraTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable, PTable pTable) {
 
         assert(ctx instanceof TephraTransactionContext);
 
         tephraTransactionContext = (TephraTransactionContext) ctx;
 
-        transactionAwareHTable = new TransactionAwareHTable(hTable);
+        transactionAwareHTable = new TransactionAwareHTable(hTable, (pTable != null && pTable.isImmutableRows()) ? TxConstants.ConflictDetection.NONE : TxConstants.ConflictDetection.ROW);
 
         tephraTransactionContext.addTransactionAware(transactionAwareHTable);
+
+        if (pTable != null && pTable.getType() != PTableType.INDEX) {
+            tephraTransactionContext.markDMLFence(pTable);
+        }
     }
 
     @Override
@@ -300,4 +328,23 @@ public class TephraTransactionTable implements PhoenixTransactionalTable {
         return transactionAwareHTable.checkAndMutate(row, family, qualifier, compareOp, value, mutation);
     }
 
+    @Override
+    public void setOperationTimeout(int i) {
+//        transactionAwareHTable.setOperationTimeout(i);
+    }
+
+    @Override
+    public int getOperationTimeout() {
+        return 0; //transactionAwareHTable.getOperationTimeout();
+    }
+
+    @Override
+    public void setRpcTimeout(int i) {
+//        transactionAwareHTable.setRpcTimeout(i);
+    }
+
+    @Override
+    public int getRpcTimeout() {
+        return 0; //transactionAwareHTable.getRpcTimeout();
+    }
 }

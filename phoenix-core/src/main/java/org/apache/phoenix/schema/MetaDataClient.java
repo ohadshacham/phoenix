@@ -213,6 +213,7 @@ import org.apache.phoenix.schema.types.PTimestamp;
 import org.apache.phoenix.schema.types.PUnsignedLong;
 import org.apache.phoenix.schema.types.PVarbinary;
 import org.apache.phoenix.schema.types.PVarchar;
+import org.apache.phoenix.transaction.PhoenixTransactionContext;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.EncodedColumnsUtil;
 import org.apache.phoenix.util.IndexUtil;
@@ -226,7 +227,6 @@ import org.apache.phoenix.util.SchemaUtil;
 import org.apache.phoenix.util.StringUtil;
 import org.apache.phoenix.util.TransactionUtil;
 import org.apache.phoenix.util.UpgradeUtil;
-import org.apache.tephra.TxConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -1971,7 +1971,7 @@ public class MetaDataClient {
                 // If TTL set, use Tephra TTL property name instead
                 Object ttl = commonFamilyProps.remove(HColumnDescriptor.TTL);
                 if (ttl != null) {
-                    commonFamilyProps.put(TxConstants.PROPERTY_TTL, ttl);
+                    commonFamilyProps.put(PhoenixTransactionContext.PROPERTY_TTL, ttl);
                 }
             }
 
