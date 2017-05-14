@@ -2,12 +2,9 @@ package org.apache.phoenix.transaction;
 
 import java.io.IOException;
 import java.sql.SQLException;
-import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
-import org.apache.commons.lang.SerializationUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.phoenix.exception.SQLExceptionCode;
@@ -16,20 +13,15 @@ import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixEmbeddedDriver.ConnectionInfo;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.util.ReadOnlyProps;
-import org.apache.tephra.TransactionFailureException;
 import org.apache.twill.zookeeper.ZKClientService;
 import org.slf4j.Logger;
-import org.apache.omid.transaction.AbstractTransactionManager;
 import org.apache.omid.transaction.HBaseCellId;
 import org.apache.omid.transaction.HBaseTransaction;
 import org.apache.omid.transaction.HBaseTransactionManager;
 import org.apache.omid.transaction.RollbackException;
-import org.apache.omid.transaction.TTable;
 import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
-
-import com.beust.jcommander.internal.Lists;
 
 
 public class OmidTransactionContext implements PhoenixTransactionContext {
@@ -174,14 +166,14 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public long getReadPointer() {
-        // TODO Auto-generated method stub
-        return 0;
+        // TODO Ohad: to fix got checkpoint
+        return tx.getTransactionId();
     }
 
     @Override
     public long getWritePointer() {
-        // TODO Auto-generated method stub
-        return 0;
+        // TODO Ohad: to fix got checkpoint
+        return tx.getTransactionId();
     }
 
     @Override
@@ -276,9 +268,5 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     public Transaction getTransaction() {
         return tx;
-    }
-
-    public List<OmidTransactionTable> getTransactionalTables() {
-        return transactionalTables;
     }
 }
