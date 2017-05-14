@@ -2,17 +2,26 @@ package org.apache.phoenix.transaction;
 
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
+import org.apache.commons.lang.SerializationUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
+import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixEmbeddedDriver.ConnectionInfo;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.tephra.TransactionFailureException;
 import org.apache.twill.zookeeper.ZKClientService;
 import org.slf4j.Logger;
+import org.apache.omid.transaction.AbstractTransactionManager;
+import org.apache.omid.transaction.HBaseCellId;
+import org.apache.omid.transaction.HBaseTransaction;
 import org.apache.omid.transaction.HBaseTransactionManager;
 import org.apache.omid.transaction.RollbackException;
 import org.apache.omid.transaction.TTable;
@@ -20,29 +29,46 @@ import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
 
+import com.beust.jcommander.internal.Lists;
+
 
 public class OmidTransactionContext implements PhoenixTransactionContext {
 
-    private Transaction tx;
+    private static TransactionManager transactionManager = null;
+
     private TransactionManager tm;
-    
+    private Transaction tx;
+
     public OmidTransactionContext() {
-//        try (TransactionManager tm = HBaseTransactionManager.newInstance();
-//                TTable txTable = new TTable("MY_TX_TABLE")) {
-//
-//               Transaction tx = tm.begin();
+        this.tx = null;
+        this.tm = null;
+    }
 
-//               Put row1 = new Put(Bytes.toBytes("EXAMPLE_ROW1"));
-//               row1.add(family, qualifier, Bytes.toBytes("val1"));
-//               txTable.put(tx, row1);
-//
-//               Put row2 = new Put(Bytes.toBytes("EXAMPLE_ROW2"));
-//               row2.add(family, qualifier, Bytes.toBytes("val2"));
-//               txTable.put(tx, row2);
+    public OmidTransactionContext(PhoenixConnection connection) {
+        this.tm = transactionManager;
+        this.tx = null;
+    }
 
-//               tm.commit(tx);
+    public OmidTransactionContext(byte[] txnBytes) {
+        
+    }
+ 
+    public OmidTransactionContext(PhoenixTransactionContext ctx,
+            PhoenixConnection connection, boolean subTask) {
 
-//           }
+        this.tm = transactionManager;
+        
+        assert (ctx instanceof OmidTransactionContext);
+        OmidTransactionContext omidTransactionContext = (OmidTransactionContext) ctx;
+        
+        
+        if (subTask) {
+            Transaction transaction = omidTransactionContext.getTransaction();
+            this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+            this.tm = null;
+        } else {
+            this.tx = omidTransactionContext.getTransaction();
+        }
     }
 
     @Override
@@ -65,15 +91,38 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public void commit() throws SQLException {
-        // TODO Auto-generated method stub
+        if (tx == null || tm == null)
+            return;
 
+        try {
+            tm.commit(tx);
+        } catch (TransactionException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();
+        } catch (RollbackException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_CONFLICT_EXCEPTION)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();
+        }
     }
 
-    
     @Override
     public void abort() throws SQLException {
-        // TODO Auto-generated method stub
+        if (tx == null || tm == null)
+            return;
 
+        try {
+            tm.rollback(tx);
+        } catch (TransactionException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();
+        }
+        
     }
 
     @Override
@@ -88,28 +137,39 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     }
 
+    public void markDMLFence(PTable table) {
+        
+    }
+
     @Override
     public void join(PhoenixTransactionContext ctx) {
-        // TODO Auto-generated method stub
-
+        assert (ctx instanceof OmidTransactionContext);
+        OmidTransactionContext omidContext = (OmidTransactionContext) ctx;
+        
+        assert (omidContext.getTransaction() instanceof HBaseTransaction);
+        Set<HBaseCellId> writeSet = ((HBaseTransaction) omidContext.getTransaction()).getWriteSet();
+        
+        assert (tx instanceof HBaseTransaction);
+        HBaseTransaction hbaseTx = (HBaseTransaction) tx;
+        
+        for (HBaseCellId cell : writeSet) {
+            hbaseTx.addWriteSetElement(cell);
+        }
     }
 
     @Override
     public boolean isTransactionRunning() {
-        // TODO Auto-generated method stub
-        return false;
+        return (tx != null);
     }
 
     @Override
     public void reset() {
-        // TODO Auto-generated method stub
-
+        tx = null;
     }
 
     @Override
     public long getTransactionId() {
-        // TODO Auto-generated method stub
-        return 0;
+        return tx.getTransactionId();
     }
 
     @Override
@@ -189,13 +249,36 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public void setupTxManager(Configuration config, String url) throws SQLException {
-        // TODO Auto-generated method stub
-
+        try {
+            transactionManager = HBaseTransactionManager.newInstance();
+        } catch (IOException | InterruptedException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();
+        }
     }
 
     @Override
-    public void tearDownTxManager() {
-        // TODO Auto-generated method stub
+    public void tearDownTxManager() throws SQLException {
+        try {
+            tm.close();
+        } catch (IOException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();        }
+    }
 
+    /**
+     *  OmidTransactionContext specific functions 
+     */
+
+    public Transaction getTransaction() {
+        return tx;
+    }
+
+    public List<OmidTransactionTable> getTransactionalTables() {
+        return transactionalTables;
     }
 }

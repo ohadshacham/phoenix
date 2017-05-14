@@ -171,5 +171,5 @@ public interface PhoenixTransactionContext {
     /**
      * Tear down transaction manager for testing
      */
-    public void tearDownTxManager();
+    public void tearDownTxManager() throws SQLException;
 }
