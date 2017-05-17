@@ -281,7 +281,7 @@ public class MutationState implements SQLCloseable {
     public HTableInterface getHTable(PTable table) throws SQLException {
         HTableInterface htable = this.getConnection().getQueryServices().getTable(table.getPhysicalName().getBytes());
         if (table.isTransactional() && phoenixTransactionContext.isTransactionRunning()) {
-            PhoenixTransactionalTable phoenixTransactionTable = TransactionUtil.getPhoenixTransactionTable(phoenixTransactionContext, htable, table);
+            PhoenixTransactionalTable phoenixTransactionTable = TransactionFactory.getTransactionFactory().getTransactionalTable(phoenixTransactionContext, htable, table);
             // Using cloned mutationState as we may have started a new transaction already
             // if auto commit is true and we need to use the original one here.
             htable = phoenixTransactionTable;
@@ -963,7 +963,7 @@ public class MutationState implements SQLCloseable {
                                 hTable = new MetaDataAwareHTable(hTable, origTableRef);
                             }
 
-                            hTable = TransactionUtil.getPhoenixTransactionTable(phoenixTransactionContext, hTable, table);
+                            hTable = TransactionFactory.getTransactionFactory().getTransactionalTable(phoenixTransactionContext, hTable, table);
                         }
                         
                         long numMutations = mutationList.size();

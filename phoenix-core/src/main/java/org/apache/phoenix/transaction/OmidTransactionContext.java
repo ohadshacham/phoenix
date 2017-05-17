@@ -130,7 +130,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     }
 
     public void markDMLFence(PTable table) {
-        
+
     }
 
     @Override

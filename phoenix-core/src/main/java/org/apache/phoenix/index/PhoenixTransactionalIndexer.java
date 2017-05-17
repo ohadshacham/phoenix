@@ -18,6 +18,7 @@
 package org.apache.phoenix.index;
 
 import java.io.IOException;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -184,7 +185,7 @@ public class PhoenixTransactionalIndexer extends BaseRegionObserver {
         stored.addAll(m);
     }
     
-    private Collection<Pair<Mutation, byte[]>> getIndexUpdates(RegionCoprocessorEnvironment env, PhoenixIndexMetaData indexMetaData, Iterator<Mutation> mutationIterator, byte[] txRollbackAttribute) throws IOException {
+    private Collection<Pair<Mutation, byte[]>> getIndexUpdates(RegionCoprocessorEnvironment env, PhoenixIndexMetaData indexMetaData, Iterator<Mutation> mutationIterator, byte[] txRollbackAttribute) throws IOException, SQLException {
         PhoenixTransactionContext txnContext = indexMetaData.getTransactionContext();
         if (txnContext == null) {
             throw new NullPointerException("Expected to find transaction in metadata for " + env.getRegionInfo().getTable().getNameAsString());

@@ -1,6 +1,7 @@
 package org.apache.phoenix.transaction;
 
 import java.io.IOException;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 
@@ -23,6 +24,12 @@ import org.apache.hadoop.hbase.client.coprocessor.Batch.Call;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Callback;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
+import org.apache.omid.transaction.TTable;
+import org.apache.omid.transaction.Transaction;
+import org.apache.phoenix.exception.SQLExceptionCode;
+import org.apache.phoenix.exception.SQLExceptionInfo;
+import org.apache.phoenix.schema.PTableType;
+import org.apache.phoenix.schema.PTable;
 
 import com.google.protobuf.Descriptors.MethodDescriptor;
 import com.google.protobuf.Message;
@@ -31,117 +38,129 @@ import com.google.protobuf.ServiceException;
 
 public class OmidTransactionTable implements PhoenixTransactionalTable {
 
-    public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) {
-        // TODO Auto-generated constructor stub
+    private TTable tTable;
+    private Transaction tx;
+    
+    public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) throws SQLException {
+        this(ctx, hTable, null);
+    }
+
+    public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable, PTable pTable) throws SQLException  {
+        assert(ctx instanceof OmidTransactionContext);
+
+        OmidTransactionContext omidTransactionContext = (OmidTransactionContext) ctx;
+
+        try {
+            tTable = new TTable(hTable);
+        } catch (IOException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+            .setMessage(e.getMessage()).setRootCause(e).build()
+            .buildException();
+        }
+
+        this.tx = omidTransactionContext.getTransaction();
+
+        if (pTable != null && pTable.getType() != PTableType.INDEX) {
+            omidTransactionContext.markDMLFence(pTable);
+        }
     }
 
     @Override
     public Result get(Get get) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.get(tx, get);
     }
 
     @Override
     public void put(Put put) throws IOException {
-        // TODO Auto-generated method stub
+        tTable.put(tx, put);
 
     }
 
     @Override
     public void delete(Delete delete) throws IOException {
-        // TODO Auto-generated method stub
-
+        tTable.delete(tx, delete);
     }
 
     @Override
     public ResultScanner getScanner(Scan scan) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+       return tTable.getScanner(tx, scan);
     }
 
     @Override
     public byte[] getTableName() {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getTableName();
     }
 
     @Override
     public Configuration getConfiguration() {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getConfiguration();
     }
 
     @Override
     public HTableDescriptor getTableDescriptor() throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getTableDescriptor();
     }
 
     @Override
     public boolean exists(Get get) throws IOException {
-        // TODO Auto-generated method stub
-        return false;
+       return tTable.exists(tx, get);
     }
 
     @Override
     public Result[] get(List<Get> gets) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.get(tx, gets);
     }
 
     @Override
     public ResultScanner getScanner(byte[] family) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getScanner(tx, family);
     }
 
     @Override
     public ResultScanner getScanner(byte[] family, byte[] qualifier)
             throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getScanner(tx, family, qualifier);
     }
 
     @Override
     public void put(List<Put> puts) throws IOException {
-        // TODO Auto-generated method stub
+        tTable.put(tx, puts);
     }
 
     @Override
     public void delete(List<Delete> deletes) throws IOException {
-        // TODO Auto-generated method stub
+        tTable.delete(tx, deletes);
     }
 
     @Override
     public void setAutoFlush(boolean autoFlush) {
-        // TODO Auto-generated method stub
+        tTable.setAutoFlush(autoFlush);
     }
 
     @Override
     public boolean isAutoFlush() {
-        // TODO Auto-generated method stub
-        return false;
+        return tTable.isAutoFlush();
     }
 
     @Override
     public long getWriteBufferSize() {
-        // TODO Auto-generated method stub
-        return 0;
+        return tTable.getWriteBufferSize();
     }
 
     @Override
     public void setWriteBufferSize(long writeBufferSize) throws IOException {
-        // TODO Auto-generated method stub
+        tTable.setWriteBufferSize(writeBufferSize);
     }
 
     @Override
     public void flushCommits() throws IOException {
-        // TODO Auto-generated method stub
+        tTable.flushCommits();
     }
 
     @Override
     public void close() throws IOException {
-        // TODO Auto-generated method stub
+        tTable.close();
     }
 
     @Override
@@ -154,8 +173,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public Boolean[] exists(List<Get> gets) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+            // TODO Auto-generated method stub
+            return null;
     }
 
     @Override
@@ -165,7 +184,7 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public void setAutoFlushTo(boolean autoFlush) {
-        // TODO Auto-generated method stub
+        tTable.setAutoFlush(autoFlush);
     }
 
     @Override
