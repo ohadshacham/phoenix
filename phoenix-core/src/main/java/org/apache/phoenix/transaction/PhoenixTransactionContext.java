@@ -23,7 +23,7 @@ public interface PhoenixTransactionContext {
         SNAPSHOT,
         SNAPSHOT_EXCLUDE_CURRENT,
         SNAPSHOT_ALL
-      }
+    }
 
     public static final String TX_ROLLBACK_ATTRIBUTE_KEY = "tephra.tx.rollback"; //"phoenix.tx.rollback"; 
 
