@@ -32,6 +32,9 @@ import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.twill.zookeeper.ZKClientService;
 import org.slf4j.Logger;
+import org.apache.omid.proto.TSOProto;
+import org.apache.omid.transaction.AbstractTransaction.VisibilityLevel;
+import org.apache.omid.transaction.CellUtils;
 import org.apache.omid.transaction.HBaseCellId;
 import org.apache.omid.transaction.HBaseTransaction;
 import org.apache.omid.transaction.HBaseTransactionManager;
@@ -40,13 +43,16 @@ import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
 
+import com.google.protobuf.InvalidProtocolBufferException;
 
 public class OmidTransactionContext implements PhoenixTransactionContext {
 
     private static TransactionManager transactionManager = null;
 
     private TransactionManager tm;
-    private Transaction tx;
+    private HBaseTransaction tx;
+
+    private static final long MAX_NON_TX_TIMESTAMP = (long) (System.currentTimeMillis() * 1.1);
 
     public OmidTransactionContext() {
         this.tx = null;
@@ -58,8 +64,9 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         this.tx = null;
     }
 
-    public OmidTransactionContext(byte[] txnBytes) {
-        
+    public OmidTransactionContext(byte[] txnBytes) throws InvalidProtocolBufferException {
+        TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
+        tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
     }
  
     public OmidTransactionContext(PhoenixTransactionContext ctx,
@@ -72,8 +79,13 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         
         
         if (subTask) {
-            Transaction transaction = omidTransactionContext.getTransaction();
-            this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+            if (omidTransactionContext.isTransactionRunning()) {
+                Transaction transaction = omidTransactionContext.getTransaction();
+                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+            } else {
+                this.tx = null;
+            }
+
             this.tm = null;
         } else {
             this.tx = omidTransactionContext.getTransaction();
@@ -89,7 +101,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         }
 
         try {
-            tx = tm.begin();
+            tx = (HBaseTransaction) tm.begin();
         } catch (TransactionException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
@@ -136,14 +148,28 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public void checkpoint(boolean hasUncommittedData) throws SQLException {
-        // TODO Auto-generated method stub
-
+        try {
+            tx.checkpoint();
+        } catch (TransactionException e) {
+            throw new SQLException(e);
+        }
     }
 
     @Override
     public void commitDDLFence(PTable dataTable, Logger logger) throws SQLException {
-        // TODO Auto-generated method stub
-
+        try {
+            tx = (HBaseTransaction) transactionManager.fence(dataTable.getName().getBytes());
+            if (logger.isInfoEnabled()) {
+                logger.info("Added write fence at ~"
+                        + tx.getReadTimestamp());
+            }
+        } catch (TransactionException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TX_UNABLE_TO_GET_WRITE_FENCE)
+            .setSchemaName(dataTable.getSchemaName().getString())
+            .setTableName(dataTable.getTableName().getString()).build()
+            .buildException();
+        }
     }
 
     public void markDMLFence(PTable table) {
@@ -155,14 +181,13 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         assert (ctx instanceof OmidTransactionContext);
         OmidTransactionContext omidContext = (OmidTransactionContext) ctx;
         
-        assert (omidContext.getTransaction() instanceof HBaseTransaction);
-        Set<HBaseCellId> writeSet = ((HBaseTransaction) omidContext.getTransaction()).getWriteSet();
-        
-        assert (tx instanceof HBaseTransaction);
-        HBaseTransaction hbaseTx = (HBaseTransaction) tx;
-        
+        HBaseTransaction transaction = omidContext.getTransaction();
+        if (transaction == null || tx == null) return;
+
+        Set<HBaseCellId> writeSet = transaction.getWriteSet();
+
         for (HBaseCellId cell : writeSet) {
-            hbaseTx.addWriteSetElement(cell);
+            tx.addWriteSetElement(cell);
         }
     }
 
@@ -183,44 +208,83 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public long getReadPointer() {
-        // TODO Ohad: to fix got checkpoint
-        return tx.getTransactionId();
+        return tx.getReadTimestamp();
     }
 
     @Override
     public long getWritePointer() {
-        // TODO Ohad: to fix got checkpoint
-        return tx.getTransactionId();
+        return tx.getWriteTimestamp();
     }
 
     @Override
     public PhoenixVisibilityLevel getVisibilityLevel() {
-        // TODO Auto-generated method stub
-        return null;
+        VisibilityLevel visibilityLevel = null;
+
+        assert(tx != null && tx instanceof HBaseTransaction);
+        visibilityLevel = ((HBaseTransaction) tx).getVisibilityLevel();
+
+        PhoenixVisibilityLevel phoenixVisibilityLevel;
+        switch (visibilityLevel) {
+        case SNAPSHOT:
+            phoenixVisibilityLevel = PhoenixVisibilityLevel.SNAPSHOT;
+            break;
+        case SNAPSHOT_EXCLUDE_CURRENT:
+            phoenixVisibilityLevel = PhoenixVisibilityLevel.SNAPSHOT_EXCLUDE_CURRENT;
+            break;
+        case SNAPSHOT_ALL:
+            phoenixVisibilityLevel = PhoenixVisibilityLevel.SNAPSHOT_ALL;
+        default:
+            phoenixVisibilityLevel = null;
+        }
+
+        return phoenixVisibilityLevel;
     }
 
     @Override
     public void setVisibilityLevel(PhoenixVisibilityLevel visibilityLevel) {
-        // TODO Auto-generated method stub
+        VisibilityLevel omidVisibilityLevel = null;
+
+        switch (visibilityLevel) {
+        case SNAPSHOT:
+            omidVisibilityLevel = VisibilityLevel.SNAPSHOT;
+            break;
+        case SNAPSHOT_EXCLUDE_CURRENT:
+            omidVisibilityLevel = VisibilityLevel.SNAPSHOT_EXCLUDE_CURRENT;
+            break;
+        case SNAPSHOT_ALL:
+            omidVisibilityLevel = VisibilityLevel.SNAPSHOT_ALL;
+            break;
+        default:
+            assert (false);
+        }
+
+        assert(tx != null && tx instanceof HBaseTransaction);
+        ((HBaseTransaction) tx).setVisibilityLevel(omidVisibilityLevel);
         
     }
 
     @Override
     public byte[] encodeTransaction() throws SQLException {
-        // TODO Auto-generated method stub
-        return null;
+        assert(tx != null);
+
+        TSOProto.Transaction.Builder transactionBuilder = TSOProto.Transaction.newBuilder();
+
+        transactionBuilder.setTransactionId(tx.getTransactionId());
+        transactionBuilder.setEpoch(tx.getEpoch());
+
+        return transactionBuilder.build().toByteArray();
     }
 
     @Override
     public long getMaxTransactionsPerSecond() {
-        // TODO Auto-generated method stub
-        return 0;
+        // TODO get the number from the TSO config
+        return 1_000_000;
     }
 
     @Override
     public boolean isPreExistingVersion(long version) {
-        // TODO Auto-generated method stub
-        return false;
+        // TODO Ohad to complete according the timestamp setting in Omid
+        return version < MAX_NON_TX_TIMESTAMP;
     }
 
     @Override
@@ -246,8 +310,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public byte[] getFamilyDeleteMarker() {
-        // TODO Auto-generated method stub
-        return null;
+        return CellUtils.FAMILY_DELETE_QUALIFIER;
     }
 
     @Override
@@ -283,7 +346,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
      *  OmidTransactionContext specific functions 
      */
 
-    public Transaction getTransaction() {
+    public HBaseTransaction getTransaction() {
         return tx;
     }
 }

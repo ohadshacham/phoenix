@@ -47,7 +47,7 @@ public class TransactionFactory {
 
     static public TransactionFactory getTransactionFactory() {
         if (transactionFactory == null) {
-            createTransactionFactory(TransactionProcessor.Omid);
+            createTransactionFactory(TransactionProcessor.Tephra);
         }
 
         return transactionFactory;
