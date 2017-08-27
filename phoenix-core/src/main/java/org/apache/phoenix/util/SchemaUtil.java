@@ -68,10 +68,9 @@ import org.apache.phoenix.schema.PDatum;
 import org.apache.phoenix.schema.PName;
 import org.apache.phoenix.schema.PNameFactory;
 import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTable.IndexType;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.RowKeySchema;
-import org.apache.phoenix.schema.PTable.QualifierEncodingScheme;
-import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
 import org.apache.phoenix.schema.RowKeySchema.RowKeySchemaBuilder;
 import org.apache.phoenix.schema.SaltingUtil;
 import org.apache.phoenix.schema.SortOrder;
@@ -984,14 +983,21 @@ public class SchemaUtil {
         return SchemaUtil.getTableKey(null, schemaName, MetaDataClient.EMPTY_TABLE);
     }
 
-    public static PName getPhysicalHBaseTableName(PName pName, boolean isNamespaceMapped, PTableType type) {
-        return getPhysicalHBaseTableName(pName.toString(), isNamespaceMapped, type);
+    public static PName getPhysicalHBaseTableName(PName schemaName, PName tableName, boolean isNamespaceMapped) {
+        return getPhysicalHBaseTableName(
+            schemaName == null ? null : schemaName.toString(), tableName.toString(), isNamespaceMapped);
     }
 
-    public static PName getPhysicalHBaseTableName(byte[] tableName, boolean isNamespaceMapped, PTableType type) {
-        return getPhysicalHBaseTableName(Bytes.toString(tableName), isNamespaceMapped, type);
+    public static PName getPhysicalHBaseTableName(byte[] schemaName, byte[] tableName, boolean isNamespaceMapped) {
+        return getPhysicalHBaseTableName(Bytes.toString(schemaName), Bytes.toString(tableName), isNamespaceMapped);
     }
 
+    /**
+     * Note: the following 4 methods (getPhysicalTableName, getPhysicalName) return an unexpected value
+     * when fullTableName is in default schema and fullTableName contains a dot. For example,
+     * if fullTableName is in default schema and fullTableName is "AAA.BBB", the expected hbase table
+     * name is "AAA.BBB" but these methods return "AAA:BBB".
+     */
     public static TableName getPhysicalTableName(String fullTableName, ReadOnlyProps readOnlyProps) {
         return getPhysicalName(Bytes.toBytes(fullTableName), readOnlyProps);
     }
@@ -1014,10 +1020,10 @@ public class SchemaUtil {
         return TableName.valueOf(schemaName, tableName);
     }
 
-    public static PName getPhysicalHBaseTableName(String tableName, boolean isNamespaceMapped, PTableType type) {
-        if (!isNamespaceMapped) { return PNameFactory.newName(tableName); }
-        return PNameFactory
-                .newName(tableName.replace(QueryConstants.NAME_SEPARATOR, QueryConstants.NAMESPACE_SEPARATOR));
+    public static PName getPhysicalHBaseTableName(String schemaName, String tableName, boolean isNamespaceMapped) {
+        if (!isNamespaceMapped) { return PNameFactory.newName(getTableNameAsBytes(schemaName, tableName)); }
+        if (schemaName == null || schemaName.isEmpty()) { return PNameFactory.newName(tableName); }
+        return PNameFactory.newName(schemaName + QueryConstants.NAMESPACE_SEPARATOR + tableName);
     }
 
     public static boolean isSchemaCheckRequired(PTableType tableType, ReadOnlyProps props) {
@@ -1093,5 +1099,14 @@ public class SchemaUtil {
                 throw new DataExceedsCapacityException(tableName + "." + column.getName().getString() + " may not exceed " + maxLength + " bytes (" + type.toObject(byteValue) + ")");
             }
         }
+    }
+
+    public static boolean hasGlobalIndex(PTable table) {
+        for (PTable index : table.getIndexes()) {
+            if (index.getIndexType() == IndexType.GLOBAL) {
+                return true;
+            }
+        }
+        return false;
     }
 }

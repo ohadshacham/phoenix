@@ -472,6 +472,7 @@ public class TephraTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
+
     public void tearDownTxManager() throws SQLException {
         try {
             if (txService != null) txService.stopAndWait();

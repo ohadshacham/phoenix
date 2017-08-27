@@ -57,8 +57,8 @@ import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_RENEW_LEASE_
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_RENEW_LEASE_THREAD_POOL_SIZE;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_RENEW_LEASE_THRESHOLD_MILLISECONDS;
 import static org.apache.phoenix.query.QueryServicesOptions.DEFAULT_RUN_RENEW_LEASE_FREQUENCY_INTERVAL_MILLISECONDS;
+import static org.apache.phoenix.util.UpgradeUtil.addParentToChildLinks;
 import static org.apache.phoenix.util.UpgradeUtil.getSysCatalogSnapshotName;
-import static org.apache.phoenix.util.UpgradeUtil.upgradeTo4_11_0;
 import static org.apache.phoenix.util.UpgradeUtil.upgradeTo4_5_0;
 
 import java.io.IOException;
@@ -93,6 +93,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.annotation.concurrent.GuardedBy;
 
@@ -226,7 +227,9 @@ import org.apache.phoenix.transaction.TransactionFactory;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.Closeables;
 import org.apache.phoenix.util.ConfigUtil;
+import org.apache.phoenix.util.EnvironmentEdgeManager;
 import org.apache.phoenix.util.JDBCUtil;
+import org.apache.phoenix.util.LogUtil;
 import org.apache.phoenix.util.MetaDataUtil;
 import org.apache.phoenix.util.PhoenixContextExecutor;
 import org.apache.phoenix.util.PhoenixRuntime;
@@ -239,8 +242,6 @@ import org.apache.phoenix.util.UpgradeUtil;
 import org.apache.twill.discovery.ZKDiscoveryService;
 import org.apache.twill.zookeeper.RetryStrategies;
 import org.apache.twill.zookeeper.ZKClientService;
-import org.apache.twill.zookeeper.ZKClientServices;
-import org.apache.twill.zookeeper.ZKClients;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -248,14 +249,12 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Throwables;
-import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 public class ConnectionQueryServicesImpl extends DelegateQueryServices implements ConnectionQueryServices {
     private static final Logger logger = LoggerFactory.getLogger(ConnectionQueryServicesImpl.class);
@@ -304,6 +303,11 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
     // List of queues instead of a single queue to provide reduced contention via lock striping
     private final List<LinkedBlockingQueue<WeakReference<PhoenixConnection>>> connectionQueues;
     private ScheduledExecutorService renewLeaseExecutor;
+    /*
+     * We can have multiple instances of ConnectionQueryServices. By making the thread factory
+     * static, renew lease thread names will be unique across them.
+     */
+    private static final ThreadFactory renewLeaseThreadFactory = new RenewLeaseThreadFactory();
     private final boolean renewLeaseEnabled;
     private final boolean isAutoUpgradeEnabled;
     private final AtomicBoolean upgradeRequired = new AtomicBoolean(false);
@@ -406,7 +410,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     QueryServicesOptions.DEFAULT_TRANSACTIONS_ENABLED);
             this.connection = HBaseFactoryProvider.getHConnectionFactory().createConnection(this.config);
             GLOBAL_HCONNECTIONS_COUNTER.increment();
-            logger.info("HConnnection established. Details: " + connection + " " +  Throwables.getStackTraceAsString(new Exception()));
+            logger.info("HConnection established. Stacktrace for informational purposes: " + connection + " " +  LogUtil.getCallerStackTrace());
             // only initialize the tx service client if needed and if we succeeded in getting a connection
             // to HBase
             if (transactionsEnabled) {
@@ -747,13 +751,12 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
         }
     }
 
-    private HTableDescriptor generateTableDescriptor(byte[] tableName, HTableDescriptor existingDesc,
+    private HTableDescriptor generateTableDescriptor(byte[] physicalTableName, HTableDescriptor existingDesc,
             PTableType tableType, Map<String, Object> tableProps, List<Pair<byte[], Map<String, Object>>> families,
             byte[][] splits, boolean isNamespaceMapped) throws SQLException {
         String defaultFamilyName = (String)tableProps.remove(PhoenixDatabaseMetaData.DEFAULT_COLUMN_FAMILY_NAME);
         HTableDescriptor tableDescriptor = (existingDesc != null) ? new HTableDescriptor(existingDesc)
-        : new HTableDescriptor(
-                SchemaUtil.getPhysicalHBaseTableName(tableName, isNamespaceMapped, tableType).getBytes());
+        : new HTableDescriptor(physicalTableName);
         // By default, do not automatically rebuild/catch up an index on a write failure
         for (Entry<String,Object> entry : tableProps.entrySet()) {
             String key = entry.getKey();
@@ -775,7 +778,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 byte[] familyByte = family.getFirst();
                 if (tableDescriptor.getFamily(familyByte) == null) {
                     if (tableType == PTableType.VIEW) {
-                        String fullTableName = Bytes.toString(tableName);
+                        String fullTableName = Bytes.toString(physicalTableName);
                         throw new ReadOnlyTableException(
                                 "The HBase column families for a read-only table must already exist",
                                 SchemaUtil.getSchemaNameFromFullName(fullTableName),
@@ -795,7 +798,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 }
             }
         }
-        addCoprocessors(tableName, tableDescriptor, tableType, tableProps);
+        addCoprocessors(physicalTableName, tableDescriptor, tableType, tableProps);
 
         // PHOENIX-3072: Set index priority if this is a system table or index table
         if (tableType == PTableType.SYSTEM) {
@@ -1019,24 +1022,23 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
      * @return true if table was created and false if it already exists
      * @throws SQLException
      */
-    private HTableDescriptor ensureTableCreated(byte[] tableName, PTableType tableType, Map<String, Object> props,
+    private HTableDescriptor ensureTableCreated(byte[] physicalTableName, PTableType tableType, Map<String, Object> props,
             List<Pair<byte[], Map<String, Object>>> families, byte[][] splits, boolean modifyExistingMetaData,
             boolean isNamespaceMapped) throws SQLException {
         SQLException sqlE = null;
         HTableDescriptor existingDesc = null;
-        boolean isMetaTable = SchemaUtil.isMetaTable(tableName);
-        byte[] physicalTable = SchemaUtil.getPhysicalHBaseTableName(tableName, isNamespaceMapped, tableType).getBytes();
+        boolean isMetaTable = SchemaUtil.isMetaTable(physicalTableName);
         boolean tableExist = true;
         try (HBaseAdmin admin = getAdmin()) {
             final String quorum = ZKConfig.getZKQuorumServersString(config);
             final String znode = this.props.get(HConstants.ZOOKEEPER_ZNODE_PARENT);
             logger.debug("Found quorum: " + quorum + ":" + znode);
             try {
-                existingDesc = admin.getTableDescriptor(physicalTable);
+                existingDesc = admin.getTableDescriptor(physicalTableName);
             } catch (org.apache.hadoop.hbase.TableNotFoundException e) {
                 tableExist = false;
                 if (tableType == PTableType.VIEW) {
-                    String fullTableName = Bytes.toString(tableName);
+                    String fullTableName = Bytes.toString(physicalTableName);
                     throw new ReadOnlyTableException(
                             "An HBase table for a VIEW must already exist",
                             SchemaUtil.getSchemaNameFromFullName(fullTableName),
@@ -1044,7 +1046,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 }
             }
 
-            HTableDescriptor newDesc = generateTableDescriptor(tableName, existingDesc, tableType, props, families,
+            HTableDescriptor newDesc = generateTableDescriptor(physicalTableName, existingDesc, tableType, props, families,
                     splits, isNamespaceMapped);
 
             if (!tableExist) {
@@ -1075,7 +1077,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                      * brought down.
                      */
                     newDesc.setValue(HTableDescriptor.SPLIT_POLICY, MetaDataSplitPolicy.class.getName());
-                    modifyTable(physicalTable, newDesc, true);
+                    modifyTable(physicalTableName, newDesc, true);
                 }
                 return null;
             } else {
@@ -1107,8 +1109,8 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     // transactional, don't allow.
                     if (existingDesc.hasCoprocessor(PhoenixTransactionalProcessor.class.getName())) {
                         throw new SQLExceptionInfo.Builder(SQLExceptionCode.TX_MAY_NOT_SWITCH_TO_NON_TX)
-                        .setSchemaName(SchemaUtil.getSchemaNameFromFullName(tableName))
-                        .setTableName(SchemaUtil.getTableNameFromFullName(tableName)).build().buildException();
+                        .setSchemaName(SchemaUtil.getSchemaNameFromFullName(physicalTableName))
+                        .setTableName(SchemaUtil.getTableNameFromFullName(physicalTableName)).build().buildException();
                     }
                     newDesc.remove(PhoenixTransactionContext.READ_NON_TX_DATA);
                 }
@@ -1116,7 +1118,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     return null; // Indicate that no metadata was changed
                 }
 
-                modifyTable(physicalTable, newDesc, true);
+                modifyTable(physicalTableName, newDesc, true);
                 return newDesc;
             }
 
@@ -1221,7 +1223,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
             }
             if (isTableNamespaceMappingEnabled != SchemaUtil.isNamespaceMappingEnabled(PTableType.TABLE,
                     getProps())) { throw new SQLExceptionInfo.Builder(
-                            SQLExceptionCode.INCONSISTENET_NAMESPACE_MAPPING_PROPERTIES)
+                            SQLExceptionCode.INCONSISTENT_NAMESPACE_MAPPING_PROPERTIES)
                     .setMessage(
                             "Ensure that config " + QueryServices.IS_NAMESPACE_MAPPING_ENABLED
                             + " is consitent on client and server.")
@@ -1391,7 +1393,8 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
         byte[] tenantIdBytes = rowKeyMetadata[PhoenixDatabaseMetaData.TENANT_ID_INDEX];
         byte[] schemaBytes = rowKeyMetadata[PhoenixDatabaseMetaData.SCHEMA_NAME_INDEX];
         byte[] tableBytes = rowKeyMetadata[PhoenixDatabaseMetaData.TABLE_NAME_INDEX];
-        byte[] tableName = physicalTableName != null ? physicalTableName : SchemaUtil.getTableNameAsBytes(schemaBytes, tableBytes);
+        byte[] tableName = physicalTableName != null ? physicalTableName :
+            SchemaUtil.getPhysicalHBaseTableName(schemaBytes, tableBytes, isNamespaceMapped).getBytes();
         boolean localIndexTable = false;
         for(Pair<byte[], Map<String, Object>> family: families) {
             if(Bytes.toString(family.getFirst()).startsWith(QueryConstants.LOCAL_INDEX_COLUMN_FAMILY_PREFIX)) {
@@ -1434,9 +1437,8 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 familiesPlusDefault.add(new Pair<byte[],Map<String,Object>>(defaultCF,Collections.<String,Object>emptyMap()));
             }
             ensureViewIndexTableCreated(
-                    SchemaUtil.getPhysicalHBaseTableName(tableName, isNamespaceMapped, tableType).getBytes(),
-                    tableProps, familiesPlusDefault, MetaDataUtil.isSalted(m, kvBuilder, ptr) ? splits : null,
-                            MetaDataUtil.getClientTimeStamp(m), isNamespaceMapped);
+                tableName, tableProps, familiesPlusDefault, MetaDataUtil.isSalted(m, kvBuilder, ptr) ? splits : null,
+                MetaDataUtil.getClientTimeStamp(m), isNamespaceMapped);
         }
 
         byte[] tableKey = SchemaUtil.getTableKey(tenantIdBytes, schemaBytes, tableBytes);
@@ -1762,7 +1764,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
             // TODO: change to  if (tableMetaData.isEmpty()) once we pass through schemaBytes and tableBytes
             // Also, could be used to update property values on ALTER TABLE t SET prop=xxx
             if ((tableMetaData.isEmpty()) || (tableMetaData.size() == 1 && tableMetaData.get(0).isEmpty())) {
-                return new MetaDataMutationResult(MutationCode.NO_OP, System.currentTimeMillis(), table);
+                return new MetaDataMutationResult(MutationCode.NO_OP, EnvironmentEdgeManager.currentTimeMillis(), table);
             }
             byte[][] rowKeyMetaData = new byte[3][];
             PTableType tableType = table.getType();
@@ -2042,7 +2044,9 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
         // and merge them with the common family properties.
         for (String f : stmtFamiliesPropsMap.keySet()) {
             if (!addingColumns && !existingColumnFamilies.contains(f)) {
-                throw new ColumnFamilyNotFoundException(f);
+                String schemaNameStr = table.getSchemaName()==null?null:table.getSchemaName().getString();
+                String tableNameStr = table.getTableName()==null?null:table.getTableName().getString();
+                throw new ColumnFamilyNotFoundException(schemaNameStr, tableNameStr, f);
             }
             if (addingColumns && !colFamiliesForPColumnsToBeAdded.contains(f)) {
                 throw new SQLExceptionInfo.Builder(SQLExceptionCode.CANNOT_SET_PROPERTY_FOR_COLUMN_NOT_ADDED).build().buildException();
@@ -2378,7 +2382,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                         boolean success = false;
                         try {
                             GLOBAL_QUERY_SERVICES_COUNTER.increment();
-                            logger.info("An instance of ConnectionQueryServices was created: " + Throwables.getStackTraceAsString(new Exception()));
+                            logger.info("An instance of ConnectionQueryServices was created.");
                             openConnection();
                             hConnectionEstablished = true;
                             boolean isDoNotUpgradePropSet = UpgradeUtil.isNoUpgradeSet(props);
@@ -2393,7 +2397,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                                     }
                                     ensureSystemTablesUpgraded(ConnectionQueryServicesImpl.this.getProps());
                                 } else if (mappedSystemCatalogExists) { throw new SQLExceptionInfo.Builder(
-                                        SQLExceptionCode.INCONSISTENET_NAMESPACE_MAPPING_PROPERTIES)
+                                        SQLExceptionCode.INCONSISTENT_NAMESPACE_MAPPING_PROPERTIES)
                                 .setMessage("Cannot initiate connection as "
                                         + SchemaUtil.getPhysicalTableName(
                                                 SYSTEM_CATALOG_NAME_BYTES, true)
@@ -2765,7 +2769,13 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     clearCache();
                 }
                 if (currentServerSideTableTimeStamp < MetaDataProtocol.MIN_SYSTEM_TABLE_TIMESTAMP_4_11_0) {
-                    upgradeTo4_11_0(metaConnection);
+                    metaConnection = addColumnsIfNotExists(
+                        metaConnection,
+                        PhoenixDatabaseMetaData.SYSTEM_CATALOG,
+                        MetaDataProtocol.MIN_SYSTEM_TABLE_TIMESTAMP_4_11_0,
+                        PhoenixDatabaseMetaData.USE_STATS_FOR_PARALLELIZATION + " "
+                                + PBoolean.INSTANCE.getSqlTypeName());
+                    addParentToChildLinks(metaConnection);
                 }
             }
 
@@ -3319,15 +3329,24 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
 
     private void scheduleRenewLeaseTasks() {
         if (isRenewingLeasesEnabled()) {
-            ThreadFactory threadFactory =
-                    new ThreadFactoryBuilder().setDaemon(true)
-                    .setNameFormat("PHOENIX-SCANNER-RENEW-LEASE" + "-thread-%s").build();
             renewLeaseExecutor =
-                    Executors.newScheduledThreadPool(renewLeasePoolSize, threadFactory);
+                    Executors.newScheduledThreadPool(renewLeasePoolSize, renewLeaseThreadFactory);
             for (LinkedBlockingQueue<WeakReference<PhoenixConnection>> q : connectionQueues) {
                 renewLeaseExecutor.scheduleAtFixedRate(new RenewLeaseTask(q), 0,
-                        renewLeaseTaskFrequency, TimeUnit.MILLISECONDS);
+                    renewLeaseTaskFrequency, TimeUnit.MILLISECONDS);
             }
+        }
+    }
+
+    private static class RenewLeaseThreadFactory implements ThreadFactory {
+        private static final AtomicInteger threadNumber = new AtomicInteger(1);
+        private static final String NAME_PREFIX = "PHOENIX-SCANNER-RENEW-LEASE-thread-";
+
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, NAME_PREFIX + threadNumber.getAndIncrement());
+            t.setDaemon(true);
+            return t;
         }
     }
 
@@ -3832,11 +3851,14 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
         if (returnSequenceValues) {
             ConcurrentMap<SequenceKey,Sequence> formerSequenceMap = null;
             synchronized (connectionCountLock) {
-                if (--connectionCount == 0) {
+                if (--connectionCount <= 0) {
                     if (!this.sequenceMap.isEmpty()) {
                         formerSequenceMap = this.sequenceMap;
                         this.sequenceMap = Maps.newConcurrentMap();
                     }
+                }
+                if (connectionCount < 0) {
+                    connectionCount = 0;
                 }
             }
             // Since we're using the former sequenceMap, we can do this outside
@@ -3844,6 +3866,12 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
             if (formerSequenceMap != null) {
                 // When there are no more connections, attempt to return any sequences
                 returnAllSequences(formerSequenceMap);
+            }
+        } else if (shouldThrottleNumConnections){ //still need to decrement connection count
+            synchronized (connectionCountLock) {
+                if (connectionCount > 0) {
+                    --connectionCount;
+                }
             }
         }
     }

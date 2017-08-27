@@ -91,7 +91,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public void put(Put put) throws IOException {
         tTable.put(tx, put);
-
     }
 
     @Override

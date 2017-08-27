@@ -51,8 +51,10 @@ import org.apache.phoenix.schema.SchemaNotFoundException;
 import org.apache.phoenix.schema.TableAlreadyExistsException;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.PropertiesUtil;
+import org.apache.phoenix.util.QueryUtil;
 import org.apache.phoenix.util.SchemaUtil;
 import org.apache.phoenix.util.TestUtil;
+import org.junit.Assert;
 import org.junit.Test;
 
 
@@ -659,5 +661,135 @@ public class CreateTableIT extends BaseClientManagedTimeIT {
                     oneByteQualifierSingleCellArrayWithOffsetsMultitenantTable, conn);
 
         }
+    }
+
+    @Test
+    public void testCreateTableWithUpdateCacheFrequencyAttrib() throws Exception {
+      Connection connection = null;
+      String TABLE_NAME = "UPDATECACHEDEFAULTVALUE";
+      try {
+        Properties props = PropertiesUtil.deepCopy(TestUtil.TEST_PROPERTIES);
+        connection = DriverManager.getConnection(getUrl(), props);
+
+        //Assert update cache frequency to default value zero
+        connection.createStatement().execute(
+          "create table "+TABLE_NAME+" (k VARCHAR PRIMARY KEY, v1 VARCHAR, v2 VARCHAR)");
+        String readSysCatQuery =
+            "select TABLE_NAME,UPDATE_CACHE_FREQUENCY from SYSTEM.CATALOG where "
+            + "TABLE_NAME = '"+TABLE_NAME+"'  AND TABLE_TYPE='u'";
+        ResultSet rs = connection.createStatement().executeQuery(readSysCatQuery);
+        Assert.assertTrue(rs.next());
+        Assert.assertEquals(0, rs.getLong(2));
+        connection.createStatement().execute("drop table "+TABLE_NAME);
+        connection.close();
+
+        //Assert update cache frequency to configured default value 10sec
+        int defaultUpdateCacheFrequency = 10000;
+        props.put(QueryServices.DEFAULT_UPDATE_CACHE_FREQUENCY_ATRRIB, ""+defaultUpdateCacheFrequency);
+        connection = DriverManager.getConnection(getUrl(), props);
+        connection.createStatement().execute(
+            "create table "+TABLE_NAME+" (k VARCHAR PRIMARY KEY, v1 VARCHAR, v2 VARCHAR)");
+        rs = connection.createStatement().executeQuery(readSysCatQuery);
+        Assert.assertTrue(rs.next());
+        Assert.assertEquals(defaultUpdateCacheFrequency, rs.getLong(2));
+        connection.createStatement().execute("drop table "+TABLE_NAME);
+
+        //Assert update cache frequency to table specific  value 30sec
+        int tableSpecificUpdateCacheFrequency = 30000;
+        connection.createStatement().execute(
+          "create table "+TABLE_NAME+" (k VARCHAR PRIMARY KEY, v1 VARCHAR, v2 VARCHAR) "
+              + "UPDATE_CACHE_FREQUENCY="+tableSpecificUpdateCacheFrequency);
+        rs = connection.createStatement().executeQuery(readSysCatQuery);
+        Assert.assertTrue(rs.next());
+        Assert.assertEquals(tableSpecificUpdateCacheFrequency, rs.getLong(2));
+      } finally {
+        if(connection!=null){
+          connection.createStatement().execute("drop table if exists "+TABLE_NAME);
+          connection.close();
+        }
+      }
+    }
+
+    @Test
+    public void testCreateTableWithNamespaceMappingEnabled() throws Exception {
+        final String NS = "NS_" + generateUniqueName();
+        final String TBL = "TBL_" + generateUniqueName();
+        final String CF = "CF";
+
+        Properties props = new Properties();
+        props.setProperty(QueryServices.IS_NAMESPACE_MAPPING_ENABLED, Boolean.TRUE.toString());
+
+        try (Connection conn = DriverManager.getConnection(getUrl(), props)) {
+            conn.createStatement().execute("CREATE SCHEMA " + NS);
+
+            // test for a table that is in non-default schema
+            {
+                String table = NS + "." + TBL;
+                conn.createStatement().execute(
+                    "CREATE TABLE " + table + " (PK VARCHAR PRIMARY KEY, " + CF + ".COL VARCHAR)");
+
+                assertTrue(QueryUtil.getExplainPlan(
+                    conn.createStatement().executeQuery("explain select * from " + table))
+                    .contains(NS + ":" + TBL));
+
+                conn.createStatement().execute("DROP TABLE " + table);
+            }
+
+            // test for a table whose name contains a dot (e.g. "AAA.BBB") in default schema
+            {
+                String table = "\"" + NS + "." + TBL + "\"";
+                conn.createStatement().execute(
+                    "CREATE TABLE " + table + " (PK VARCHAR PRIMARY KEY, " + CF + ".COL VARCHAR)");
+
+                assertTrue(QueryUtil.getExplainPlan(
+                    conn.createStatement().executeQuery("explain select * from " + table))
+                    .contains(NS + "." + TBL));
+
+                conn.createStatement().execute("DROP TABLE " + table);
+            }
+
+            // test for a view whose name contains a dot (e.g. "AAA.BBB") in non-default schema
+            {
+                String table = NS + ".\"" + NS + "." + TBL + "\"";
+                conn.createStatement().execute(
+                    "CREATE TABLE " + table + " (PK VARCHAR PRIMARY KEY, " + CF + ".COL VARCHAR)");
+
+                assertTrue(QueryUtil.getExplainPlan(
+                    conn.createStatement().executeQuery("explain select * from " + table))
+                    .contains(NS + ":" + NS + "." + TBL));
+
+                conn.createStatement().execute("DROP TABLE " + table);
+            }
+
+            conn.createStatement().execute("DROP SCHEMA " + NS);
+        }
+    }
+    @Test
+    public void testSetHTableDescriptorPropertyOnView() throws Exception {
+        long ts = nextTimestamp();
+        Properties props = new Properties();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts));
+        final String dataTableFullName = generateUniqueName();
+        String ddl = "CREATE TABLE " + dataTableFullName + " (\n"
+                +"ID1 VARCHAR(15) NOT NULL,\n"
+                +"ID2 VARCHAR(15) NOT NULL,\n"
+                +"CREATED_DATE DATE,\n"
+                +"CREATION_TIME BIGINT,\n"
+                +"LAST_USED DATE,\n"
+                +"CONSTRAINT PK PRIMARY KEY (ID1, ID2)) ";
+        Connection conn1 = DriverManager.getConnection(getUrl(), props);
+        conn1.createStatement().execute(ddl);
+        conn1.close();
+        final String viewFullName = generateUniqueName();
+        props.setProperty(PhoenixRuntime.CURRENT_SCN_ATTRIB, Long.toString(ts+10));
+        Connection conn2 = DriverManager.getConnection(getUrl(), props);
+        ddl = "CREATE VIEW " + viewFullName + " AS SELECT * FROM " + dataTableFullName + " WHERE CREATION_TIME = 1 THROW_INDEX_WRITE_FAILURE = FALSE";
+        try {
+            conn2.createStatement().execute(ddl);
+            fail();
+        } catch (SQLException e) {
+            assertEquals(SQLExceptionCode.VIEW_WITH_PROPERTIES.getErrorCode(), e.getErrorCode());
+        }
+        conn2.close();
     }
 }

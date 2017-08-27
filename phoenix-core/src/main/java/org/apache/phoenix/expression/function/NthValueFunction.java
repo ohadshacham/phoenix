@@ -73,9 +73,9 @@ public class NthValueFunction extends FirstLastValueBaseFunction {
         FirstLastValueBaseClientAggregator aggregator = new FirstLastValueBaseClientAggregator();
 
         if (children.size() < 3) {
-            aggregator.init(offset);
+            aggregator.init(offset, false);
         } else {
-            aggregator.init(((Number) ((LiteralExpression) children.get(3)).getValue()).intValue());
+            aggregator.init(((Number) ((LiteralExpression) children.get(3)).getValue()).intValue(), false);
         }
 
         return aggregator;

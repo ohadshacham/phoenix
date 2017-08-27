@@ -18,6 +18,7 @@
 package org.apache.phoenix.queryserver.server;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
@@ -28,6 +29,10 @@ import org.apache.calcite.avatica.remote.LocalService;
 import org.apache.calcite.avatica.remote.Service;
 import org.apache.calcite.avatica.server.DoAsRemoteUserCallback;
 import org.apache.calcite.avatica.server.HttpServer;
+import org.apache.calcite.avatica.server.RemoteUserExtractor;
+import org.apache.calcite.avatica.server.RemoteUserExtractionException;
+import org.apache.calcite.avatica.server.HttpRequestRemoteUserExtractor;
+import org.apache.calcite.avatica.server.HttpQueryStringParameterRemoteUserExtractor;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
@@ -38,25 +43,33 @@ import org.apache.hadoop.net.DNS;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.ProxyUsers;
+import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.phoenix.query.QueryServices;
 import org.apache.phoenix.query.QueryServicesOptions;
+import org.apache.phoenix.loadbalancer.service.LoadBalanceZookeeperConf;
+import org.apache.phoenix.queryserver.register.Registry;
 
 import java.io.File;
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
+import java.net.InetAddress;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.ServiceConfigurationError;
+import java.util.ServiceLoader;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+
+import javax.servlet.http.HttpServletRequest;
 
 /**
  * A query server for Phoenix over Calcite's Avatica.
@@ -70,6 +83,7 @@ public final class QueryServer extends Configured implements Tool, Runnable {
   private HttpServer server = null;
   private int retCode = 0;
   private Throwable t = null;
+  private Registry registry;
 
   /**
    * Log information about the currently running JVM.
@@ -175,11 +189,13 @@ public final class QueryServer extends Configured implements Tool, Runnable {
           QueryServices.QUERY_SERVER_HBASE_SECURITY_CONF_ATTRIB));
       final boolean disableSpnego = getConf().getBoolean(QueryServices.QUERY_SERVER_SPNEGO_AUTH_DISABLED_ATTRIB,
               QueryServicesOptions.DEFAULT_QUERY_SERVER_SPNEGO_AUTH_DISABLED);
-
+      String hostname;
+      final boolean disableLogin = getConf().getBoolean(QueryServices.QUERY_SERVER_DISABLE_KERBEROS_LOGIN,
+              QueryServicesOptions.DEFAULT_QUERY_SERVER_DISABLE_KERBEROS_LOGIN);
 
       // handle secure cluster credentials
-      if (isKerberos && !disableSpnego) {
-        String hostname = Strings.domainNamePointerToHostName(DNS.getDefaultHost(
+      if (isKerberos && !disableSpnego && !disableLogin) {
+        hostname = Strings.domainNamePointerToHostName(DNS.getDefaultHost(
             getConf().get(QueryServices.QUERY_SERVER_DNS_INTERFACE_ATTRIB, "default"),
             getConf().get(QueryServices.QUERY_SERVER_DNS_NAMESERVER_ATTRIB, "default")));
         if (LOG.isDebugEnabled()) {
@@ -191,6 +207,9 @@ public final class QueryServer extends Configured implements Tool, Runnable {
         SecurityUtil.login(getConf(), QueryServices.QUERY_SERVER_KEYTAB_FILENAME_ATTRIB,
             QueryServices.QUERY_SERVER_KERBEROS_PRINCIPAL_ATTRIB, hostname);
         LOG.info("Login successful.");
+      } else {
+        hostname = InetAddress.getLocalHost().getHostName();
+        LOG.info(" Kerberos is off and hostname is : "+hostname);
       }
 
       Class<? extends PhoenixMetaFactory> factoryClass = getConf().getClass(
@@ -210,7 +229,12 @@ public final class QueryServer extends Configured implements Tool, Runnable {
 
       // Enable SPNEGO and Impersonation when using Kerberos
       if (isKerberos) {
-        UserGroupInformation ugi = UserGroupInformation.getLoginUser();
+        UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+        LOG.debug("Current user is " + ugi);
+        if (!ugi.hasKerberosCredentials()) {
+          ugi = UserGroupInformation.getLoginUser();
+          LOG.debug("Current user does not have Kerberos credentials, using instead " + ugi);
+        }
 
         // Make sure the proxyuser configuration is up to date
         ProxyUsers.refreshSuperUserGroupsConfiguration(getConf());
@@ -228,11 +252,14 @@ public final class QueryServer extends Configured implements Tool, Runnable {
         builder.withSpnego(ugi.getUserName(), additionalAllowedRealms)
             .withAutomaticLogin(keytab)
             .withImpersonation(new PhoenixDoAsCallback(ugi, getConf()));
+
       }
+      setRemoteUserExtractorIfNecessary(builder, getConf());
 
       // Build and start the HttpServer
       server = builder.build();
       server.start();
+      registerToServiceProvider(hostname);
       runningLatch.countDown();
       server.join();
       return 0;
@@ -240,9 +267,71 @@ public final class QueryServer extends Configured implements Tool, Runnable {
       LOG.fatal("Unrecoverable service error. Shutting down.", t);
       this.t = t;
       return -1;
+    } finally {
+      unRegister();
     }
   }
 
+  public synchronized void stop() {
+    server.stop();
+  }
+
+  public boolean registerToServiceProvider(String hostName)  {
+
+    boolean success = true ;
+    try {
+      LoadBalanceZookeeperConf loadBalanceConfiguration = getLoadBalanceConfiguration();
+      Preconditions.checkNotNull(loadBalanceConfiguration);
+      this.registry = getRegistry();
+      Preconditions.checkNotNull(registry);
+      String zkConnectString = loadBalanceConfiguration.getZkConnectString();
+      this.registry.registerServer(loadBalanceConfiguration, getPort(), zkConnectString, hostName);
+    } catch(Throwable ex){
+      LOG.debug("Caught an error trying to register with the load balancer", ex);
+      success = false;
+    } finally {
+      return success;
+    }
+  }
+
+
+  public LoadBalanceZookeeperConf getLoadBalanceConfiguration()  {
+    ServiceLoader<LoadBalanceZookeeperConf> serviceLocator= ServiceLoader.load(LoadBalanceZookeeperConf.class);
+    LoadBalanceZookeeperConf zookeeperConfig = null;
+    try {
+      if (serviceLocator.iterator().hasNext())
+        zookeeperConfig = serviceLocator.iterator().next();
+    } catch(ServiceConfigurationError ex) {
+      LOG.debug("Unable to locate the service provider for load balancer configuration", ex);
+    } finally {
+      return zookeeperConfig;
+    }
+  }
+
+  public Registry getRegistry()  {
+    ServiceLoader<Registry> serviceLocator= ServiceLoader.load(Registry.class);
+    Registry registry = null;
+    try {
+      if (serviceLocator.iterator().hasNext())
+        registry = serviceLocator.iterator().next();
+    } catch(ServiceConfigurationError ex) {
+      LOG.debug("Unable to locate the zookeeper registry for the load balancer", ex);
+    } finally {
+      return registry;
+    }
+  }
+
+  public boolean unRegister()  {
+    boolean success = true;
+    try {
+      registry.unRegisterServer();
+    }catch(Throwable ex) {
+      LOG.debug("Caught an error while de-registering the query server from the load balancer",ex);
+      success = false;
+    } finally {
+      return success;
+    }
+  }
   /**
    * Parses the serialization method from the configuration.
    *
@@ -270,6 +359,56 @@ public final class QueryServer extends Configured implements Tool, Runnable {
       retCode = run(argv);
     } catch (Exception e) {
       // already logged
+    }
+  }
+
+  // add remoteUserExtractor to builder if enabled
+  @VisibleForTesting
+  public void setRemoteUserExtractorIfNecessary(HttpServer.Builder builder, Configuration conf) {
+    if (conf.getBoolean(QueryServices.QUERY_SERVER_WITH_REMOTEUSEREXTRACTOR_ATTRIB,
+            QueryServicesOptions.DEFAULT_QUERY_SERVER_WITH_REMOTEUSEREXTRACTOR)) {
+      builder.withRemoteUserExtractor(new PhoenixRemoteUserExtractor(conf));
+    }
+  }
+
+  /**
+   * Use the correctly way to extract end user.
+   */
+
+  static class PhoenixRemoteUserExtractor implements RemoteUserExtractor{
+    private final HttpQueryStringParameterRemoteUserExtractor paramRemoteUserExtractor;
+    private final HttpRequestRemoteUserExtractor requestRemoteUserExtractor;
+    private final String userExtractParam;
+
+    public PhoenixRemoteUserExtractor(Configuration conf) {
+      this.requestRemoteUserExtractor = new HttpRequestRemoteUserExtractor();
+      this.userExtractParam = conf.get(QueryServices.QUERY_SERVER_REMOTEUSEREXTRACTOR_PARAM,
+              QueryServicesOptions.DEFAULT_QUERY_SERVER_REMOTEUSEREXTRACTOR_PARAM);
+      this.paramRemoteUserExtractor = new HttpQueryStringParameterRemoteUserExtractor(userExtractParam);
+    }
+
+    @Override
+    public String extract(HttpServletRequest request) throws RemoteUserExtractionException {
+      if (request.getParameter(userExtractParam) != null) {
+        String extractedUser = paramRemoteUserExtractor.extract(request);
+        UserGroupInformation ugi = UserGroupInformation.createRemoteUser(request.getRemoteUser());
+        UserGroupInformation proxyUser = UserGroupInformation.createProxyUser(extractedUser, ugi);
+
+        // Check if this user is allowed to be impersonated.
+        // Will throw AuthorizationException if the impersonation as this user is not allowed
+        try {
+          ProxyUsers.authorize(proxyUser, request.getRemoteAddr());
+          return extractedUser;
+        } catch (AuthorizationException e) {
+          throw new RemoteUserExtractionException(e.getMessage(), e);
+        }
+      } else {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("The parameter (" + userExtractParam + ") used to extract the remote user doesn't exist in the request.");
+        }
+        return requestRemoteUserExtractor.extract(request);
+      }
+
     }
   }
 

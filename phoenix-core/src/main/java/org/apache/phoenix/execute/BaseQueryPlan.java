@@ -64,14 +64,13 @@ import org.apache.phoenix.schema.KeyValueSchema;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PName;
 import org.apache.phoenix.schema.PTable;
-import org.apache.phoenix.schema.PTable.IndexType;
 import org.apache.phoenix.schema.PTable.ImmutableStorageScheme;
+import org.apache.phoenix.schema.PTable.IndexType;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.TableRef;
 import org.apache.phoenix.trace.TracingIterator;
 import org.apache.phoenix.trace.util.Tracing;
 import org.apache.phoenix.util.ByteUtil;
-import org.apache.phoenix.util.EncodedColumnsUtil;
 import org.apache.phoenix.util.IndexUtil;
 import org.apache.phoenix.util.LogUtil;
 import org.apache.phoenix.util.SQLCloseable;
@@ -113,6 +112,7 @@ public abstract class BaseQueryPlan implements QueryPlan {
     protected final Expression dynamicFilter;
     protected Long estimatedRows;
     protected Long estimatedSize;
+    private boolean explainPlanCalled;
     
 
     protected BaseQueryPlan(
@@ -133,15 +133,6 @@ public abstract class BaseQueryPlan implements QueryPlan {
         this.parallelIteratorFactory = parallelIteratorFactory;
         this.dynamicFilter = dynamicFilter;
     }
-
-    public Long getEstimatedRowCount() {
-        return this.estimatedRows;
-    }
-    
-    public Long getEstimatedByteCount() {
-        return this.estimatedSize;
-    }
-    
 
 	@Override
 	public Operation getOperation() {
@@ -217,6 +208,21 @@ public abstract class BaseQueryPlan implements QueryPlan {
     public final ResultIterator iterator(ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
         return iterator(Collections.<SQLCloseable>emptyList(), scanGrouper, scan);
     }
+    
+	private ResultIterator getWrappedIterator(final List<? extends SQLCloseable> dependencies,
+			ResultIterator iterator) {
+		ResultIterator wrappedIterator = dependencies.isEmpty() ? iterator : new DelegateResultIterator(iterator) {
+			@Override
+			public void close() throws SQLException {
+				try {
+					super.close();
+				} finally {
+					SQLCloseables.closeAll(dependencies);
+				}
+			}
+		};
+		return wrappedIterator;
+	}
 
     public final ResultIterator iterator(final List<? extends SQLCloseable> dependencies, ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
          if (scan == null) {
@@ -229,11 +235,11 @@ public abstract class BaseQueryPlan implements QueryPlan {
 		 * row to be scanned.
 		 */
         if (context.getScanRanges() == ScanRanges.NOTHING && !getStatement().isAggregate()) {
-            return ResultIterator.EMPTY_ITERATOR;
+            return getWrappedIterator(dependencies, ResultIterator.EMPTY_ITERATOR);
         }
         
         if (tableRef == TableRef.EMPTY_TABLE_REF) {
-            return newIterator(scanGrouper, scan);
+            return getWrappedIterator(dependencies, newIterator(scanGrouper, scan));
         }
         
         // Set miscellaneous scan attributes. This is the last chance to set them before we
@@ -273,12 +279,8 @@ public abstract class BaseQueryPlan implements QueryPlan {
 	        TimeRange scanTimeRange = scan.getTimeRange();
 	        Long scn = connection.getSCN();
 	        if (scn == null) {
-	            // If we haven't resolved the time at the beginning of compilation, don't
-	            // force the lookup on the server, but use HConstants.LATEST_TIMESTAMP instead.
-	            scn = tableRef.getTimeStamp();
-	            if (scn == QueryConstants.UNSET_TIMESTAMP) {
-	                scn = HConstants.LATEST_TIMESTAMP;
-	            }
+	        	// Always use latest timestamp unless scn is set or transactional (see PHOENIX-4089)
+                scn = HConstants.LATEST_TIMESTAMP;
 	        }
 	        try {
 	            TimeRange timeRangeToUse = ScanUtil.intersectTimeRange(rowTimestampRange, scanTimeRange, scn);
@@ -342,19 +344,7 @@ public abstract class BaseQueryPlan implements QueryPlan {
         	LOG.debug(LogUtil.addCustomAnnotations("Scan ready for iteration: " + scan, connection));
         }
         
-        ResultIterator iterator = newIterator(scanGrouper, scan);
-        iterator = dependencies.isEmpty() ?
-                iterator : new DelegateResultIterator(iterator) {
-            @Override
-            public void close() throws SQLException {
-                try {
-                    super.close();
-                } finally {
-                    SQLCloseables.closeAll(dependencies);
-                }
-            }
-        };
-        
+        ResultIterator iterator = getWrappedIterator(dependencies, newIterator(scanGrouper, scan));
         if (LOG.isDebugEnabled()) {
         	LOG.debug(LogUtil.addCustomAnnotations("Iterator ready: " + iterator, connection));
         }
@@ -502,13 +492,15 @@ public abstract class BaseQueryPlan implements QueryPlan {
 
     @Override
     public ExplainPlan getExplainPlan() throws SQLException {
+        explainPlanCalled = true;
         if (context.getScanRanges() == ScanRanges.NOTHING) {
             return new ExplainPlan(Collections.singletonList("DEGENERATE SCAN OVER " + getTableRef().getTable().getName().getString()));
         }
         
         // Optimize here when getting explain plan, as queries don't get optimized until after compilation
         QueryPlan plan = context.getConnection().getQueryServices().getOptimizer().optimize(context.getStatement(), this);
-        return plan instanceof BaseQueryPlan ? new ExplainPlan(getPlanSteps(plan.iterator())) : plan.getExplainPlan();
+        ExplainPlan exp = plan instanceof BaseQueryPlan ? new ExplainPlan(getPlanSteps(plan.iterator())) : plan.getExplainPlan();
+        return exp;
     }
 
     private List<String> getPlanSteps(ResultIterator iterator){
@@ -522,4 +514,20 @@ public abstract class BaseQueryPlan implements QueryPlan {
         return groupBy.isEmpty() ? orderBy.getOrderByExpressions().isEmpty() : groupBy.isOrderPreserving();
     }
     
+    @Override
+    public Long getEstimatedRowsToScan() throws SQLException {
+        if (!explainPlanCalled) {
+            getExplainPlan();
+        }
+        return estimatedRows;
+    }
+
+    @Override
+    public Long getEstimatedBytesToScan() throws SQLException {
+        if (!explainPlanCalled) {
+            getExplainPlan();
+        }
+        return estimatedSize;
+    }
+
 }

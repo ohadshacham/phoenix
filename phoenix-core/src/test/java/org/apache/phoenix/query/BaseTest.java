@@ -44,7 +44,6 @@ import static org.apache.phoenix.util.TestUtil.E_VALUE;
 import static org.apache.phoenix.util.TestUtil.FUNKY_NAME;
 import static org.apache.phoenix.util.TestUtil.HBASE_DYNAMIC_COLUMNS;
 import static org.apache.phoenix.util.TestUtil.HBASE_NATIVE;
-import static org.apache.phoenix.util.TestUtil.MDTEST_NAME;
 import static org.apache.phoenix.util.TestUtil.MULTI_CF_NAME;
 import static org.apache.phoenix.util.TestUtil.PARENTID1;
 import static org.apache.phoenix.util.TestUtil.PARENTID2;
@@ -119,8 +118,6 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.ipc.PhoenixRpcSchedulerFactory;
-import org.apache.hadoop.hbase.ipc.RpcControllerFactory;
-import org.apache.hadoop.hbase.ipc.controller.ServerRpcControllerFactory;
 import org.apache.hadoop.hbase.regionserver.RSRpcServices;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.end2end.BaseClientManagedTimeIT;
@@ -293,14 +290,6 @@ public abstract class BaseTest {
                 "    \"1\".\"value\" integer,\n" +
                 "    \"1\".\"_blah^\" varchar)"
                 );
-        builder.put(MDTEST_NAME,"create table " + MDTEST_NAME +
-                "   (id char(1) primary key,\n" +
-                "    a.col1 integer,\n" +
-                "    b.col2 bigint,\n" +
-                "    b.col3 decimal,\n" +
-                "    b.col4 decimal(5),\n" +
-                "    b.col5 decimal(6,3))\n" +
-                "    a." + HConstants.VERSIONS + "=" + 1 + "," + "a." + HColumnDescriptor.DATA_BLOCK_ENCODING + "='" + DataBlockEncoding.NONE +  "'");
         builder.put(MULTI_CF_NAME,"create table " + MULTI_CF_NAME +
                 "   (id char(15) not null primary key,\n" +
                 "    a.unique_user_count integer,\n" +
@@ -399,7 +388,6 @@ public abstract class BaseTest {
     
     private static final String ORG_ID = "00D300000000XHP";
     protected static int NUM_SLAVES_BASE = 1;
-    private static final String DEFAULT_SERVER_RPC_CONTROLLER_FACTORY = ServerRpcControllerFactory.class.getName();
     private static final String DEFAULT_RPC_SCHEDULER_FACTORY = PhoenixRpcSchedulerFactory.class.getName();
     
     protected static String getZKClientPort(Configuration conf) {
@@ -580,9 +568,9 @@ public abstract class BaseTest {
         //no point doing sanity checks when running tests.
         conf.setBoolean("hbase.table.sanity.checks", false);
         // set the server rpc controller and rpc scheduler factory, used to configure the cluster
-        conf.set(RpcControllerFactory.CUSTOM_CONTROLLER_CONF_KEY, DEFAULT_SERVER_RPC_CONTROLLER_FACTORY);
         conf.set(RSRpcServices.REGION_SERVER_RPC_SCHEDULER_FACTORY_CLASS, DEFAULT_RPC_SCHEDULER_FACTORY);
-        
+        conf.setLong(HConstants.ZK_SESSION_TIMEOUT, 10 * HConstants.DEFAULT_ZK_SESSION_TIMEOUT);
+        conf.setLong(HConstants.ZOOKEEPER_TICK_TIME, 6 * 1000);
         // override any defaults based on overrideProps
         for (Entry<String,String> entry : overrideProps) {
             conf.set(entry.getKey(), entry.getValue());
@@ -1003,7 +991,11 @@ public abstract class BaseTest {
     protected static String initATableValues(String tenantId, byte[][] splits, Date date, Long ts, String url) throws Exception {
         return initATableValues(null, tenantId, splits, date, ts, url, null);
     }
-    
+
+    protected static String initATableValues(String tenantId, byte[][] splits, Date date, Long ts, String url, String tableDDLOptions) throws Exception {
+        return initATableValues(null, tenantId, splits, date, ts, url, tableDDLOptions);
+    }
+
     protected static String initATableValues(String tableName, String tenantId, byte[][] splits, Date date, Long ts, String url, String tableDDLOptions) throws Exception {
         if(tableName == null) {
             tableName = generateUniqueName();

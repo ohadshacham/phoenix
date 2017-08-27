@@ -75,6 +75,7 @@ import org.apache.phoenix.iterate.ParallelIteratorFactory;
 import org.apache.phoenix.iterate.TableResultIterator;
 import org.apache.phoenix.iterate.TableResultIteratorFactory;
 import org.apache.phoenix.jdbc.PhoenixStatement.PhoenixStatementParser;
+import org.apache.phoenix.monitoring.MetricType;
 import org.apache.phoenix.parse.PFunction;
 import org.apache.phoenix.parse.PSchema;
 import org.apache.phoenix.query.ConnectionQueryServices;
@@ -270,6 +271,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
         timestampPattern = this.services.getProps().get(QueryServices.TIMESTAMP_FORMAT_ATTRIB, DateUtil.DEFAULT_TIMESTAMP_FORMAT);
         String numberPattern = this.services.getProps().get(QueryServices.NUMBER_FORMAT_ATTRIB, NumberUtil.DEFAULT_NUMBER_FORMAT);
         int maxSize = this.services.getProps().getInt(QueryServices.MAX_MUTATION_SIZE_ATTRIB,QueryServicesOptions.DEFAULT_MAX_MUTATION_SIZE);
+        int maxSizeBytes = this.services.getProps().getInt(QueryServices.MAX_MUTATION_SIZE_BYTES_ATTRIB,QueryServicesOptions.DEFAULT_MAX_MUTATION_SIZE_BYTES);
         Format dateFormat = DateUtil.getDateFormatter(datePattern);
         Format timeFormat = DateUtil.getDateFormatter(timePattern);
         Format timestampFormat = DateUtil.getDateFormatter(timestampPattern);
@@ -300,7 +302,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
             }
         };
         this.isRequestLevelMetricsEnabled = JDBCUtil.isCollectingRequestLevelMetricsEnabled(url, info, this.services.getProps());
-        this.mutationState = mutationState == null ? newMutationState(maxSize) : new MutationState(mutationState);
+        this.mutationState = mutationState == null ? newMutationState(maxSize, maxSizeBytes) : new MutationState(mutationState);
         this.metaData = metaData;
         this.metaData.pruneTables(pruner);
         this.metaData.pruneFunctions(pruner);
@@ -486,8 +488,8 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
     	return metaData.getTableRef(key);
     }
 
-    protected MutationState newMutationState(int maxSize) {
-        return new MutationState(maxSize, this);
+    protected MutationState newMutationState(int maxSize, int maxSizeBytes) {
+        return new MutationState(maxSize, maxSizeBytes, this);
     }
     
     public MutationState getMutationState() {
@@ -532,6 +534,12 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
         }
     }
     
+    private void checkOpen() throws SQLException {
+        if (isClosed) {
+            throw new SQLExceptionInfo.Builder(SQLExceptionCode.CONNECTION_CLOSED).build().buildException();
+        }
+    }
+    
     @Override
     public void close() throws SQLException {
         if (isClosed) {
@@ -558,6 +566,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
         CallRunner.run(new CallRunner.CallableThrowable<Void, SQLException>() {
             @Override
             public Void call() throws SQLException {
+                checkOpen();
                 mutationState.commit();
                 return null;
             }
@@ -567,6 +576,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public Array createArrayOf(String typeName, Object[] elements) throws SQLException {
+        checkOpen();
     	PDataType arrayPrimitiveType = PDataType.fromSqlTypeName(typeName);
     	return PArrayDataType.instantiatePhoenixArray(arrayPrimitiveType, elements);
     }
@@ -597,6 +607,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
     
     @Override
     public Statement createStatement() throws SQLException {
+        checkOpen();
         PhoenixStatement statement = new PhoenixStatement(this);
         statements.add(statement);
         return statement;
@@ -616,6 +627,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public Statement createStatement(int resultSetType, int resultSetConcurrency) throws SQLException {
+        checkOpen();
         if (resultSetType != ResultSet.TYPE_FORWARD_ONLY || resultSetConcurrency != ResultSet.CONCUR_READ_ONLY) {
             throw new SQLFeatureNotSupportedException();
         }
@@ -625,6 +637,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
     @Override
     public Statement createStatement(int resultSetType, int resultSetConcurrency, int resultSetHoldability)
             throws SQLException {
+        checkOpen();
         if (resultSetHoldability != ResultSet.CLOSE_CURSORS_AT_COMMIT) {
             throw new SQLFeatureNotSupportedException();
         }
@@ -663,7 +676,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
             .build().buildException();
         }
         this.mutationState.rollback();
-        this.mutationState = new MutationState(this.mutationState.getMaxSize(), this, txContext);
+        this.mutationState = new MutationState(this.mutationState.getMaxSize(), this.mutationState.getMaxSizeBytes(), this, txContext);
         
         // Write data to HBase after each statement execution as the commit may not
         // come through Phoenix APIs.
@@ -676,7 +689,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public String getCatalog() throws SQLException {
-        return "";
+        return tenantId == null ? "" : tenantId.getString();
     }
 
     @Override
@@ -697,6 +710,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public DatabaseMetaData getMetaData() throws SQLException {
+        checkOpen();
         return new PhoenixDatabaseMetaData(this);
     }
 
@@ -757,6 +771,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public PreparedStatement prepareStatement(String sql) throws SQLException {
+        checkOpen();
         PhoenixPreparedStatement statement = new PhoenixPreparedStatement(this, sql);
         statements.add(statement);
         return statement;
@@ -764,18 +779,21 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public PreparedStatement prepareStatement(String sql, int autoGeneratedKeys) throws SQLException {
+        checkOpen();
         // Ignore autoGeneratedKeys, and just execute the statement.
         return prepareStatement(sql);
     }
 
     @Override
     public PreparedStatement prepareStatement(String sql, int[] columnIndexes) throws SQLException {
+        checkOpen();
         // Ignore columnIndexes, and just execute the statement.
         return prepareStatement(sql);
     }
 
     @Override
     public PreparedStatement prepareStatement(String sql, String[] columnNames) throws SQLException {
+        checkOpen();
         // Ignore columnNames, and just execute the statement.
         return prepareStatement(sql);
     }
@@ -783,6 +801,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
     @Override
     public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency)
             throws SQLException {
+        checkOpen();
         if (resultSetType != ResultSet.TYPE_FORWARD_ONLY || resultSetConcurrency != ResultSet.CONCUR_READ_ONLY) {
             throw new SQLFeatureNotSupportedException();
         }
@@ -792,6 +811,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
     @Override
     public PreparedStatement prepareStatement(String sql, int resultSetType, int resultSetConcurrency,
             int resultSetHoldability) throws SQLException {
+        checkOpen();
         if (resultSetHoldability != ResultSet.CLOSE_CURSORS_AT_COMMIT) {
             throw new SQLFeatureNotSupportedException();
         }
@@ -808,6 +828,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
         CallRunner.run(new CallRunner.CallableThrowable<Void, SQLException>() {
             @Override
             public Void call() throws SQLException {
+                checkOpen();
                 mutationState.rollback();
                 return null;
             }
@@ -822,6 +843,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public void setAutoCommit(boolean isAutoCommit) throws SQLException {
+        checkOpen();
         this.isAutoCommit = isAutoCommit;
     }
 
@@ -831,10 +853,17 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public void setCatalog(String catalog) throws SQLException {
+        checkOpen();
         if (!this.getCatalog().equalsIgnoreCase(catalog)) {
             // allow noop calls to pass through.
             throw new SQLFeatureNotSupportedException();
         }
+        // TODO:
+//        if (catalog == null) {
+//            tenantId = null;
+//        } else {
+//            tenantId = PNameFactory.newName(catalog);
+//        }
     }
 
     @Override
@@ -854,6 +883,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public void setReadOnly(boolean readOnly) throws SQLException {
+        checkOpen();
         this.readOnly=readOnly;
     }
 
@@ -869,6 +899,7 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public void setTransactionIsolation(int level) throws SQLException {
+        checkOpen();
         boolean transactionsEnabled = getQueryServices().getProps().getBoolean(QueryServices.TRANSACTIONS_ENABLED, 
                 QueryServicesOptions.DEFAULT_TRANSACTIONS_ENABLED);
         if (level == Connection.TRANSACTION_SERIALIZABLE) {
@@ -903,8 +934,8 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public void setSchema(String schema) throws SQLException {
+        checkOpen();
         this.schema = schema;
-
     }
 
     @Override
@@ -918,14 +949,12 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
 
     @Override
     public void abort(Executor executor) throws SQLException {
-        // TODO Auto-generated method stub
-        
+        checkOpen();
     }
 
     @Override
     public void setNetworkTimeout(Executor executor, int milliseconds) throws SQLException {
-        // TODO Auto-generated method stub
-        
+        checkOpen();
     }
 
     @Override
@@ -1019,12 +1048,12 @@ public class PhoenixConnection implements Connection, MetaDataMutated, SQLClosea
         this.traceScope = traceScope;
     }
     
-    public Map<String, Map<String, Long>> getMutationMetrics() {
+    public Map<String, Map<MetricType, Long>> getMutationMetrics() {
         return mutationState.getMutationMetricQueue().aggregate();
     }
     
-    public Map<String, Map<String, Long>> getReadMetrics() {
-        return mutationState.getReadMetricQueue() != null ? mutationState.getReadMetricQueue().aggregate() : Collections.<String, Map<String, Long>>emptyMap();
+    public Map<String, Map<MetricType, Long>> getReadMetrics() {
+        return mutationState.getReadMetricQueue() != null ? mutationState.getReadMetricQueue().aggregate() : Collections.<String, Map<MetricType, Long>>emptyMap();
     }
     
     public boolean isRequestLevelMetricsEnabled() {

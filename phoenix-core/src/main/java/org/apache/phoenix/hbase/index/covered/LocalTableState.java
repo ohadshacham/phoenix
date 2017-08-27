@@ -18,7 +18,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.KeyValueUtil;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.util.Pair;
@@ -28,8 +30,8 @@ import org.apache.phoenix.hbase.index.covered.data.LocalHBaseState;
 import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.hbase.index.covered.update.ColumnTracker;
 import org.apache.phoenix.hbase.index.covered.update.IndexedColumnGroup;
-import org.apache.phoenix.hbase.index.scanner.Scanner;
 import org.apache.phoenix.hbase.index.scanner.ScannerBuilder;
+import org.apache.phoenix.hbase.index.scanner.ScannerBuilder.CoveredDeleteScanner;
 import org.apache.phoenix.hbase.index.util.IndexManagementUtil;
 
 /**
@@ -82,6 +84,24 @@ public class LocalTableState implements TableState {
         for (KeyValue kv : list) {
             this.memstore.add(kv, overwrite);
         }
+    }
+
+    private void addUpdateCells(List<Cell> list, boolean overwrite) {
+        if (list == null) return;
+        // Avoid a copy of the Cell into a KeyValue if it's already a KeyValue
+        for (Cell c : list) {
+            this.memstore.add(maybeCopyCell(c), overwrite);
+        }
+    }
+
+    private KeyValue maybeCopyCell(Cell c) {
+        // Same as KeyValueUtil, but HBase has deprecated this method. Avoid depending on something
+        // that will likely be removed at some point in time.
+        if (c == null) return null;
+        if (c instanceof KeyValue) {
+            return (KeyValue) c;
+        }
+        return KeyValueUtil.copyToNewKeyValue(c);
     }
 
     @Override
@@ -143,7 +163,7 @@ public class LocalTableState implements TableState {
      *         {@link IndexUpdate}.
      * @throws IOException
      */
-    public Pair<Scanner, IndexUpdate> getIndexedColumnsTableState(
+    public Pair<CoveredDeleteScanner, IndexUpdate> getIndexedColumnsTableState(
         Collection<? extends ColumnReference> indexedColumns, boolean ignoreNewerMutations, boolean returnNullScannerIfRowNotFound, IndexMetaData indexMetaData) throws IOException {
         ensureLocalStateInitialized(indexedColumns, ignoreNewerMutations, indexMetaData);
         // filter out things with a newer timestamp and track the column references to which it applies
@@ -155,9 +175,9 @@ public class LocalTableState implements TableState {
             }
         }
 
-        Scanner scanner = this.scannerBuilder.buildIndexedColumnScanner(indexedColumns, tracker, ts, returnNullScannerIfRowNotFound);
+        CoveredDeleteScanner scanner = this.scannerBuilder.buildIndexedColumnScanner(indexedColumns, tracker, ts, returnNullScannerIfRowNotFound);
 
-        return new Pair<Scanner, IndexUpdate>(scanner, new IndexUpdate(tracker));
+        return new Pair<CoveredDeleteScanner, IndexUpdate>(scanner, new IndexUpdate(tracker));
     }
 
     /**
@@ -176,8 +196,8 @@ public class LocalTableState implements TableState {
         // no need to perform scan to find prior row values when the indexed columns are immutable, as
         // by definition, there won't be any.
         if (!indexMetaData.isImmutableRows()) {
-            // add the current state of the row
-            this.addUpdate(this.table.getCurrentRowState(update, toCover, ignoreNewerMutations).list(), false);
+            // add the current state of the row. Uses listCells() to avoid a new array creation.
+            this.addUpdateCells(this.table.getCurrentRowState(update, toCover, ignoreNewerMutations).listCells(), false);
         }
 
         // add the covered columns to the set
@@ -246,7 +266,7 @@ public class LocalTableState implements TableState {
     @Override
     public Pair<ValueGetter, IndexUpdate> getIndexUpdateState(Collection<? extends ColumnReference> indexedColumns, boolean ignoreNewerMutations, boolean returnNullScannerIfRowNotFound, IndexMetaData indexMetaData)
             throws IOException {
-        Pair<Scanner, IndexUpdate> pair = getIndexedColumnsTableState(indexedColumns, ignoreNewerMutations, returnNullScannerIfRowNotFound, indexMetaData);
+        Pair<CoveredDeleteScanner, IndexUpdate> pair = getIndexedColumnsTableState(indexedColumns, ignoreNewerMutations, returnNullScannerIfRowNotFound, indexMetaData);
         ValueGetter valueGetter = IndexManagementUtil.createGetterFromScanner(pair.getFirst(), getCurrentRowKey());
         return new Pair<ValueGetter, IndexUpdate>(valueGetter, pair.getSecond());
     }

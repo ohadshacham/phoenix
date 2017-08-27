@@ -67,7 +67,6 @@ public class TransactionFactory {
         default:
             ctx = null;
         }
-
         return ctx;
     }
 
@@ -103,7 +102,6 @@ public class TransactionFactory {
         default:
             ctx = null;
         }
-
         return ctx;
     }
 

@@ -18,6 +18,7 @@
 package org.apache.phoenix.execute;
 
 import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_MUTATION_BATCH_FAILED_COUNT;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_MUTATION_BATCH_SIZE;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_MUTATION_BYTES;
 import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_MUTATION_COMMIT_TIME;
@@ -32,8 +33,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 import javax.annotation.Nonnull;
 import javax.annotation.concurrent.Immutable;
@@ -82,7 +81,6 @@ import org.apache.phoenix.schema.RowKeySchema;
 import org.apache.phoenix.schema.TableNotFoundException;
 import org.apache.phoenix.schema.TableRef;
 import org.apache.phoenix.schema.ValueSchema.Field;
-import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.types.PLong;
 import org.apache.phoenix.trace.util.Tracing;
 import org.apache.phoenix.transaction.PhoenixTransactionContext;
@@ -91,6 +89,7 @@ import org.apache.phoenix.transaction.PhoenixTransactionalTable;
 import org.apache.phoenix.transaction.TransactionFactory;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.IndexUtil;
+import org.apache.phoenix.util.KeyValueUtil;
 import org.apache.phoenix.util.LogUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.SQLCloseable;
@@ -120,6 +119,8 @@ public class MutationState implements SQLCloseable {
     private final PhoenixConnection connection;
     private final long maxSize;
     private final long maxSizeBytes;
+    private final long batchSize;
+    private final long batchSizeBytes;
     private long batchCount = 0L;
     private final Map<TableRef, Map<ImmutableBytesPtr,RowMutationState>> mutations;
     private final Set<String> uncommittedPhysicalNames = Sets.newHashSetWithExpectedSize(10);
@@ -135,37 +136,39 @@ public class MutationState implements SQLCloseable {
     private final MutationMetricQueue mutationMetricQueue;
     private ReadMetricQueue readMetricQueue;
 
-    public MutationState(long maxSize, PhoenixConnection connection) {
-        this(maxSize,connection, false, null);
+    public MutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection) {
+        this(maxSize, maxSizeBytes, connection, false, null);
     }
 
-    public MutationState(long maxSize, PhoenixConnection connection, PhoenixTransactionContext txContext) {
-        this(maxSize,connection, false, txContext);
+    public MutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection, PhoenixTransactionContext txContext) {
+        this(maxSize, maxSizeBytes, connection, false, txContext);
     }
 
     public MutationState(MutationState mutationState) {
-        this(mutationState.maxSize, mutationState.connection, true, mutationState.getPhoenixTransactionContext());
+        this(mutationState.maxSize,  mutationState.maxSizeBytes, mutationState.connection, true, mutationState.getPhoenixTransactionContext());
     }
 
-    public MutationState(long maxSize, PhoenixConnection connection, long sizeOffset) {
-        this(maxSize, connection, false, null, sizeOffset);
+    public MutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection, long sizeOffset) {
+        this(maxSize, maxSizeBytes, connection, false, null, sizeOffset);
     }
 
-    private MutationState(long maxSize, PhoenixConnection connection, boolean subTask, PhoenixTransactionContext txContext) {
-        this(maxSize,connection, subTask, txContext, 0);
+    private MutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection, boolean subTask, PhoenixTransactionContext txContext) {
+        this(maxSize, maxSizeBytes, connection, subTask, txContext, 0);
     }
 
-    private MutationState(long maxSize, PhoenixConnection connection, boolean subTask, PhoenixTransactionContext txContext, long sizeOffset) {
-        this(maxSize, connection, Maps.<TableRef, Map<ImmutableBytesPtr,RowMutationState>>newHashMapWithExpectedSize(5), subTask, txContext);
+    private MutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection, boolean subTask, PhoenixTransactionContext txContext, long sizeOffset) {
+        this(maxSize, maxSizeBytes, connection, Maps.<TableRef, Map<ImmutableBytesPtr,RowMutationState>>newHashMapWithExpectedSize(5), subTask, txContext);
         this.sizeOffset = sizeOffset;
     }
 
-    MutationState(long maxSize, PhoenixConnection connection,
+    MutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection,
             Map<TableRef, Map<ImmutableBytesPtr, RowMutationState>> mutations,
             boolean subTask, PhoenixTransactionContext txContext) {
         this.maxSize = maxSize;
+        this.maxSizeBytes = maxSizeBytes;
         this.connection = connection;
-        this.maxSizeBytes = connection.getMutateBatchSizeBytes();
+        this.batchSize = connection.getMutateBatchSize();
+        this.batchSizeBytes = connection.getMutateBatchSizeBytes();
         this.mutations = mutations;
         boolean isMetricsEnabled = connection.isRequestLevelMetricsEnabled();
         this.mutationMetricQueue = isMetricsEnabled ? new MutationMetricQueue()
@@ -184,21 +187,25 @@ public class MutationState implements SQLCloseable {
         }
     }
 
-    public MutationState(TableRef table, Map<ImmutableBytesPtr,RowMutationState> mutations, long sizeOffset, long maxSize, PhoenixConnection connection) {
-        this(maxSize, connection, false, null, sizeOffset);
+    public MutationState(TableRef table, Map<ImmutableBytesPtr,RowMutationState> mutations, long sizeOffset, long maxSize, long maxSizeBytes, PhoenixConnection connection) throws SQLException {
+        this(maxSize, maxSizeBytes, connection, false, null, sizeOffset);
         this.mutations.put(table, mutations);
         this.numRows = mutations.size();
         throwIfTooBig();
     }
-    
+
     public long getMaxSize() {
         return maxSize;
     }
-    
+
+    public long getMaxSizeBytes() {
+        return maxSizeBytes;
+    }
+
     public PhoenixTransactionContext getPhoenixTransactionContext() {
         return phoenixTransactionContext;
     }
-    
+
     /**
      * Commit a write fence when creating an index so that we can detect
      * when a data table transaction is started before the create index
@@ -333,16 +340,23 @@ public class MutationState implements SQLCloseable {
         return false;
     }
 
-    public static MutationState emptyMutationState(long maxSize, PhoenixConnection connection) {
-        MutationState state = new MutationState(maxSize, connection, Collections.<TableRef, Map<ImmutableBytesPtr,RowMutationState>>emptyMap(), false, null);
+    public static MutationState emptyMutationState(long maxSize, long maxSizeBytes, PhoenixConnection connection) {
+        MutationState state = new MutationState(maxSize, maxSizeBytes, connection, Collections.<TableRef, Map<ImmutableBytesPtr,RowMutationState>>emptyMap(), false, null);
         state.sizeOffset = 0;
         return state;
     }
     
-    private void throwIfTooBig() {
+    private void throwIfTooBig() throws SQLException {
         if (numRows > maxSize) {
-            // TODO: throw SQLException ?
-            throw new IllegalArgumentException("MutationState size of " + numRows + " is bigger than max allowed size of " + maxSize);
+            resetState();
+            throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_MUTATION_SIZE_EXCEEDED).build()
+                    .buildException();
+        }
+        long estimatedSize = KeyValueUtil.getEstimatedRowSize(mutations);
+        if (estimatedSize > maxSizeBytes) {
+            resetState();
+            throw new SQLExceptionInfo.Builder(SQLExceptionCode.MAX_MUTATION_SIZE_BYTES_EXCEEDED)
+                    .build().buildException();
         }
     }
     
@@ -409,7 +423,7 @@ public class MutationState implements SQLCloseable {
      * 
      * @param newMutationState the newer mutation state
      */
-    public void join(MutationState newMutationState) {
+    public void join(MutationState newMutationState) throws SQLException {
         if (this == newMutationState) { // Doesn't make sense
             return;
         }
@@ -575,7 +589,7 @@ public class MutationState implements SQLCloseable {
                 // future dated data row mutations that will get in the way of generating the
                 // correct index rows on replay.
                 for (Mutation mutation : rowMutations) {
-                    mutation.setAttribute(BaseScannerRegionObserver.IGNORE_NEWER_MUTATIONS, PDataType.TRUE_BYTES);
+                    mutation.setAttribute(BaseScannerRegionObserver.REPLAY_WRITES, BaseScannerRegionObserver.REPLAY_TABLE_AND_INDEX_WRITES);
                 }
             }
             if (mutationsPertainingToIndex != null) mutationsPertainingToIndex
@@ -678,7 +692,6 @@ public class MutationState implements SQLCloseable {
     private long validate(TableRef tableRef, Map<ImmutableBytesPtr, RowMutationState> rowKeyToColumnMap) throws SQLException {
         Long scn = connection.getSCN();
         MetaDataClient client = new MetaDataClient(connection);
-        long serverTimeStamp = tableRef.getTimeStamp();
         // If we're auto committing, we've already validated the schema when we got the ColumnResolver,
         // so no need to do it again here.
         PTable table = tableRef.getTable();
@@ -702,7 +715,6 @@ public class MutationState implements SQLCloseable {
         } 
         long timestamp = result.getMutationTime();
         if (timestamp != QueryConstants.UNSET_TIMESTAMP) {
-            serverTimeStamp = timestamp;
             if (result.wasUpdated()) {
                 List<PColumn> columns = Lists.newArrayListWithExpectedSize(table.getColumns().size());
                 for (Map.Entry<ImmutableBytesPtr,RowMutationState> rowEntry : rowKeyToColumnMap.entrySet()) {
@@ -724,14 +736,14 @@ public class MutationState implements SQLCloseable {
                 }
             }
         }
-        return scn == null ? serverTimeStamp == QueryConstants.UNSET_TIMESTAMP ? HConstants.LATEST_TIMESTAMP : serverTimeStamp : scn;
+        return scn == null ? HConstants.LATEST_TIMESTAMP : scn;
     }
     
     private static long calculateMutationSize(List<Mutation> mutations) {
         long byteSize = 0;
         if (GlobalClientMetrics.isMetricsEnabled()) {
             for (Mutation mutation : mutations) {
-                byteSize += mutation.heapSize();
+                byteSize += KeyValueUtil.calculateMutationDiskSize(mutation);
             }
         }
         GLOBAL_MUTATION_BYTES.update(byteSize);
@@ -756,8 +768,8 @@ public class MutationState implements SQLCloseable {
         }
     }
 
-    public long getMaxSizeBytes() {
-        return maxSizeBytes;
+    public long getBatchSizeBytes() {
+        return batchSizeBytes;
     }
 
     public long getBatchCount() {
@@ -888,13 +900,11 @@ public class MutationState implements SQLCloseable {
         }
 
         Map<ImmutableBytesPtr, RowMutationState> valuesMap;
-        List<TableRef> txTableRefs = Lists.newArrayListWithExpectedSize(mutations.size());
         Map<TableInfo,List<Mutation>> physicalTableMutationMap = Maps.newLinkedHashMap(); 
         // add tracing for this operation
         try (TraceScope trace = Tracing.startNewSpan(connection, "Committing mutations to tables")) {
             Span span = trace.getSpan();
             ImmutableBytesWritable indexMetaDataPtr = new ImmutableBytesWritable();
-            boolean isTransactional;
             while (tableRefIterator.hasNext()) {
                 // at this point we are going through mutations for each table
                 final TableRef tableRef = tableRefIterator.next();
@@ -949,6 +959,11 @@ public class MutationState implements SQLCloseable {
 
                 int retryCount = 0;
                 boolean shouldRetry = false;
+                long numMutations = 0;
+                long mutationSizeBytes = 0;
+                long mutationCommitTime = 0;
+                long numFailedMutations = 0;;
+                long startTime = 0;
                 do {
                     TableRef origTableRef = tableInfo.getOrigTableRef();
                     PTable table = origTableRef.getTable();
@@ -963,7 +978,6 @@ public class MutationState implements SQLCloseable {
                     try {
                         if (table.isTransactional()) {
                             // Track tables to which we've sent uncommitted data
-                            txTableRefs.add(origTableRef);
                             uncommittedPhysicalNames.add(table.getPhysicalName().getString());
 
                             // If we have indexes, wrap the HTable in a delegate HTable that
@@ -976,12 +990,13 @@ public class MutationState implements SQLCloseable {
                             hTable = TransactionFactory.getTransactionFactory().getTransactionalTable(phoenixTransactionContext, hTable, table);
                         }
                         
-                        long numMutations = mutationList.size();
+                        numMutations = mutationList.size();
                         GLOBAL_MUTATION_BATCH_SIZE.update(numMutations);
+                        mutationSizeBytes = calculateMutationSize(mutationList);
                         
-                        long startTime = System.currentTimeMillis();
+                        startTime = System.currentTimeMillis();
                         child.addTimelineAnnotation("Attempt " + retryCount);
-                        List<List<Mutation>> mutationBatchList = getMutationBatchList(maxSize, maxSizeBytes, mutationList);
+                        List<List<Mutation>> mutationBatchList = getMutationBatchList(batchSize, batchSizeBytes, mutationList);
                         for (List<Mutation> mutationBatch : mutationBatchList) {
                             hTable.batch(mutationBatch);
                             batchCount++;
@@ -990,18 +1005,17 @@ public class MutationState implements SQLCloseable {
                         child.stop();
                         child.stop();
                         shouldRetry = false;
-                        long mutationCommitTime = System.currentTimeMillis() - startTime;
+                        mutationCommitTime = System.currentTimeMillis() - startTime;
                         GLOBAL_MUTATION_COMMIT_TIME.update(mutationCommitTime);
+                        numFailedMutations = 0;
                         
-                        long mutationSizeBytes = calculateMutationSize(mutationList);
-                        MutationMetric mutationsMetric = new MutationMetric(numMutations, mutationSizeBytes, mutationCommitTime);
-                        mutationMetricQueue.addMetricsForTable(Bytes.toString(htableName), mutationsMetric);
                         if (tableInfo.isDataTable()) {
                             numRows -= numMutations;
                         }
                         // Remove batches as we process them
                         mutations.remove(origTableRef);
                     } catch (Exception e) {
+                    	mutationCommitTime = System.currentTimeMillis() - startTime;
                         serverTimestamp = ServerUtil.parseServerTimestamp(e);
                         SQLException inferredE = ServerUtil.parseServerExceptionOrNull(e);
                         if (inferredE != null) {
@@ -1024,8 +1038,13 @@ public class MutationState implements SQLCloseable {
                         }
                         // Throw to client an exception that indicates the statements that
                         // were not committed successfully.
-                        sqlE = new CommitException(e, getUncommittedStatementIndexes(), serverTimestamp);
+                        int[] uncommittedStatementIndexes = getUncommittedStatementIndexes();
+						sqlE = new CommitException(e, uncommittedStatementIndexes, serverTimestamp);
+						numFailedMutations = uncommittedStatementIndexes.length;
+						GLOBAL_MUTATION_BATCH_FAILED_COUNT.update(numFailedMutations);
                     } finally {
+                    	MutationMetric mutationsMetric = new MutationMetric(numMutations, mutationSizeBytes, mutationCommitTime, numFailedMutations);
+                        mutationMetricQueue.addMetricsForTable(Bytes.toString(htableName), mutationsMetric);
                         try {
                             if (cache!=null) 
                                 cache.close();
@@ -1055,13 +1074,13 @@ public class MutationState implements SQLCloseable {
      * @param allMutationList List of HBase mutations
      * @return List of lists of mutations
      */
-    public static List<List<Mutation>> getMutationBatchList(long maxSize, long maxSizeBytes, List<Mutation> allMutationList) {
+    public static List<List<Mutation>> getMutationBatchList(long batchSize, long batchSizeBytes, List<Mutation> allMutationList) {
         List<List<Mutation>> mutationBatchList = Lists.newArrayList();
         List<Mutation> currentList = Lists.newArrayList();
         long currentBatchSizeBytes = 0L;
         for (Mutation mutation : allMutationList) {
-            long mutationSizeBytes = mutation.heapSize();
-            if (currentList.size() == maxSize || currentBatchSizeBytes + mutationSizeBytes > maxSizeBytes) {
+            long mutationSizeBytes = KeyValueUtil.calculateMutationDiskSize(mutation);
+            if (currentList.size() == batchSize || currentBatchSizeBytes + mutationSizeBytes > batchSizeBytes) {
                 if (currentList.size() > 0) {
                     mutationBatchList.add(currentList);
                     currentList = Lists.newArrayList();
@@ -1081,7 +1100,11 @@ public class MutationState implements SQLCloseable {
     public byte[] encodeTransaction() throws SQLException {
         return phoenixTransactionContext.encodeTransaction();
     }
-    
+
+    public static PhoenixTransactionContext decodeTransaction(byte[] txnBytes) throws IOException {
+        return TransactionFactory.getTransactionFactory().getTransactionContext(txnBytes);
+    }
+
     private ServerCache setMetaDataOnMutations(TableRef tableRef, List<? extends Mutation> mutations,
             ImmutableBytesWritable indexMetaDataPtr) throws SQLException {
         PTable table = tableRef.getTable();

@@ -69,6 +69,7 @@ import com.google.common.collect.Multimap;
  */
 public class PhoenixIndexFailurePolicy extends DelegateIndexFailurePolicy {
     private static final Log LOG = LogFactory.getLog(PhoenixIndexFailurePolicy.class);
+    public static final String THROW_INDEX_WRITE_FAILURE = "THROW_INDEX_WRITE_FAILURE";
     public static final String DISABLE_INDEX_ON_WRITE_FAILURE = "DISABLE_INDEX_ON_WRITE_FAILURE";
     public static final String REBUILD_INDEX_ON_WRITE_FAILURE = "REBUILD_INDEX_ON_WRITE_FAILURE";
     public static final String BLOCK_DATA_TABLE_WRITES_ON_WRITE_FAILURE = "BLOCK_DATA_TABLE_WRITES_ON_WRITE_FAILURE";
@@ -76,6 +77,7 @@ public class PhoenixIndexFailurePolicy extends DelegateIndexFailurePolicy {
     private boolean blockDataTableWritesOnFailure;
     private boolean disableIndexOnFailure;
     private boolean rebuildIndexOnFailure;
+    private boolean throwIndexWriteFailure;
 
     public PhoenixIndexFailurePolicy() {
         super(new KillServerOnFailurePolicy());
@@ -110,6 +112,14 @@ public class PhoenixIndexFailurePolicy extends DelegateIndexFailurePolicy {
         } else {
             blockDataTableWritesOnFailure = Boolean.parseBoolean(value);
         }
+        
+        value = htd.getValue(THROW_INDEX_WRITE_FAILURE);
+        if (value == null) {
+	        throwIndexWriteFailure = env.getConfiguration().getBoolean(QueryServices.INDEX_FAILURE_THROW_EXCEPTION_ATTRIB,
+	                QueryServicesOptions.DEFAULT_INDEX_FAILURE_THROW_EXCEPTION);
+        } else {
+        	throwIndexWriteFailure = Boolean.parseBoolean(value);
+        }
     }
 
     /**
@@ -135,7 +145,15 @@ public class PhoenixIndexFailurePolicy extends DelegateIndexFailurePolicy {
             throwing = false;
         } finally {
             if (!throwing) {
-                throw ServerUtil.wrapInDoNotRetryIOException("Unable to update the following indexes: " + attempted.keySet(), cause, timestamp);
+            	IOException ioException = ServerUtil.wrapInDoNotRetryIOException("Unable to update the following indexes: " + attempted.keySet(), cause, timestamp);
+            	Mutation m = attempted.entries().iterator().next().getValue();
+            	boolean isIndexRebuild = PhoenixIndexMetaData.isIndexRebuild(m.getAttributesMap());
+            	// Always throw if rebuilding index since the rebuilder needs to know if it was successful
+            	if (throwIndexWriteFailure || isIndexRebuild) {
+            		throw ioException;
+            	} else {
+                    LOG.warn("Swallowing index write failure", ioException);
+            	}
             }
         }
     }
@@ -198,35 +216,36 @@ public class PhoenixIndexFailurePolicy extends DelegateIndexFailurePolicy {
                 minTimeStamp *= -1;
             }
             // Disable the index by using the updateIndexState method of MetaDataProtocol end point coprocessor.
-            HTableInterface systemTable = env.getTable(SchemaUtil
-                    .getPhysicalTableName(PhoenixDatabaseMetaData.SYSTEM_CATALOG_NAME_BYTES, env.getConfiguration()));
-            MetaDataMutationResult result = IndexUtil.setIndexDisableTimeStamp(indexTableName, minTimeStamp,
-                    systemTable, newState);
-            if (result.getMutationCode() == MutationCode.TABLE_NOT_FOUND) {
-                LOG.info("Index " + indexTableName + " has been dropped. Ignore uncommitted mutations");
-                continue;
+            try (HTableInterface systemTable = env.getTable(SchemaUtil
+                    .getPhysicalTableName(PhoenixDatabaseMetaData.SYSTEM_CATALOG_NAME_BYTES, env.getConfiguration()))) {
+                MetaDataMutationResult result = IndexUtil.updateIndexState(indexTableName, minTimeStamp,
+                        systemTable, newState);
+                if (result.getMutationCode() == MutationCode.TABLE_NOT_FOUND) {
+                    LOG.info("Index " + indexTableName + " has been dropped. Ignore uncommitted mutations");
+                    continue;
+                }
+                if (result.getMutationCode() != MutationCode.TABLE_ALREADY_EXISTS) {
+                    if (leaveIndexActive) {
+                        LOG.warn("Attempt to update INDEX_DISABLE_TIMESTAMP " + " failed with code = "
+                                + result.getMutationCode());
+                        // If we're not disabling the index, then we don't want to throw as throwing
+                        // will lead to the RS being shutdown.
+                        if (blockDataTableWritesOnFailure) {
+                            throw new DoNotRetryIOException("Attempt to update INDEX_DISABLE_TIMESTAMP failed.");
+                        }
+                    } else {
+                        LOG.warn("Attempt to disable index " + indexTableName + " failed with code = "
+                                + result.getMutationCode() + ". Will use default failure policy instead.");
+                        throw new DoNotRetryIOException("Attempt to disable " + indexTableName + " failed.");
+                    } 
+                }
+                if (leaveIndexActive)
+                    LOG.info("Successfully update INDEX_DISABLE_TIMESTAMP for " + indexTableName + " due to an exception while writing updates.",
+                            cause);
+                else
+                    LOG.info("Successfully disabled index " + indexTableName + " due to an exception while writing updates.",
+                            cause);
             }
-            if (result.getMutationCode() != MutationCode.TABLE_ALREADY_EXISTS) {
-                if (leaveIndexActive) {
-                    LOG.warn("Attempt to update INDEX_DISABLE_TIMESTAMP " + " failed with code = "
-                            + result.getMutationCode());
-                    // If we're not disabling the index, then we don't want to throw as throwing
-                    // will lead to the RS being shutdown.
-                    if (blockDataTableWritesOnFailure) {
-                        throw new DoNotRetryIOException("Attempt to update INDEX_DISABLE_TIMESTAMP failed.");
-                    }
-                } else {
-                    LOG.warn("Attempt to disable index " + indexTableName + " failed with code = "
-                            + result.getMutationCode() + ". Will use default failure policy instead.");
-                    throw new DoNotRetryIOException("Attempt to disable " + indexTableName + " failed.");
-                } 
-            }
-            if (leaveIndexActive)
-                LOG.info("Successfully update INDEX_DISABLE_TIMESTAMP for " + indexTableName + " due to an exception while writing updates.",
-                        cause);
-            else
-                LOG.info("Successfully disabled index " + indexTableName + " due to an exception while writing updates.",
-                        cause);
         }
         // Return the cell time stamp (note they should all be the same)
         return timestamp;
