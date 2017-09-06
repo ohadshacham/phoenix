@@ -32,18 +32,25 @@ import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.twill.zookeeper.ZKClientService;
 import org.slf4j.Logger;
-
 import org.apache.omid.proto.TSOProto;
 import org.apache.omid.transaction.AbstractTransaction.VisibilityLevel;
 import org.apache.omid.transaction.CellUtils;
 import org.apache.omid.transaction.HBaseCellId;
+import org.apache.omid.transaction.HBaseOmidClientConfiguration;
 import org.apache.omid.transaction.HBaseTransaction;
 import org.apache.omid.transaction.HBaseTransactionManager;
 import org.apache.omid.transaction.RollbackException;
 import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
+//import org.apache.omid.tso.TSOMockModule;
+//import org.apache.omid.transaction.OmidCompactor;
+//import org.apache.omid.tso.TSOMockModule;
+import org.apache.omid.tso.TSOServer;
+import org.apache.omid.tso.TSOServerConfig;
 
+import com.google.inject.Guice;
+import com.google.inject.Injector;
 import com.google.protobuf.InvalidProtocolBufferException;
 
 public class OmidTransactionContext implements PhoenixTransactionContext {
@@ -54,6 +61,9 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     private HBaseTransaction tx;
 
     private static final long MAX_NON_TX_TIMESTAMP = (long) (System.currentTimeMillis() * 1.1);
+
+    // For testing
+    private TSOServer tso;
 
     public OmidTransactionContext() {
         this.tx = null;
@@ -66,10 +76,16 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     }
 
     public OmidTransactionContext(byte[] txnBytes) throws InvalidProtocolBufferException {
-        TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
-        tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+        this();
+
+        if (txnBytes != null && txnBytes.length > 0) {
+            TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
+            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+        } else {
+            tx = null;
+        }
     }
- 
+
     public OmidTransactionContext(PhoenixTransactionContext ctx,
             PhoenixConnection connection, boolean subTask) {
 
@@ -243,6 +259,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public void setVisibilityLevel(PhoenixVisibilityLevel visibilityLevel) {
+
         VisibilityLevel omidVisibilityLevel = null;
 
         switch (visibilityLevel) {
@@ -290,8 +307,8 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public BaseRegionObserver getCoProcessor() {
-        // TODO Auto-generated method stub
         return null;
+        //return new OmidCompactor();
     }
 
     @Override
@@ -302,9 +319,17 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props,
-            ConnectionInfo connectionInfo) {
-        // TODO Auto-generated method stub
-        
+            ConnectionInfo connectionInfo) throws SQLException {
+        try {
+            HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
+            clientConf.setConnectionString("localhost:54758");
+            transactionManager = HBaseTransactionManager.newInstance(clientConf);
+        } catch (IOException | InterruptedException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();
+        }
         return null;
         
     }
@@ -320,10 +345,35 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     }
 
+    // For testing
     @Override
     public void setupTxManager(Configuration config, String url) throws SQLException {
+        // TSO Setup
+//        TSOServerConfig tsoConfig = new TSOServerConfig();
+//        tsoConfig.setPort(1234);
+//        tsoConfig.setConflictMapSize(1000);
+//        Injector injector = Guice.createInjector(new TSOMockModule(tsoConfig));
+//        tso = injector.getInstance(TSOServer.class);
+//        tso.startAndWait();
+
+        TSOServerConfig tsoConfig = new TSOServerConfig();
+        tsoConfig.setPort(54758);
+        tsoConfig.setConflictMapSize(1000);
         try {
-            transactionManager = HBaseTransactionManager.newInstance();
+            tso = TSOServer.getInitializedTsoServer(tsoConfig);
+            tso.startAndWait();
+        } catch (Exception e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+                    .setMessage(e.getMessage()).setRootCause(e).build()
+                    .buildException();
+        }
+
+        HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
+        clientConf.setConnectionString("localhost:54758");
+
+        try {
+            transactionManager = HBaseTransactionManager.newInstance(clientConf);
         } catch (IOException | InterruptedException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
@@ -332,15 +382,18 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         }
     }
 
+    // For testing
     @Override
     public void tearDownTxManager() throws SQLException {
         try {
-            tm.close();
+            transactionManager.close();
+            tso.stopAndWait();
         } catch (IOException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
                     .setMessage(e.getMessage()).setRootCause(e).build()
-                    .buildException();        }
+                    .buildException();
+        }
     }
 
     /**

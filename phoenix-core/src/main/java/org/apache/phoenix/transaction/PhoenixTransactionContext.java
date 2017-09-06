@@ -62,8 +62,10 @@ public interface PhoenixTransactionContext {
      * @param config
      * @param props
      * @param connectionInfo
+     *
+     * @throws SQLException
      */
-    public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props, ConnectionInfo connectionInfo);
+    public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props, ConnectionInfo connectionInfo) throws SQLException;
 
     /**
      * Starts a transaction

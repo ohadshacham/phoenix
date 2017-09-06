@@ -30,9 +30,10 @@ import java.util.Properties;
 
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.PropertiesUtil;
+import org.junit.Ignore;
 import org.junit.Test;
 
-public abstract class UnnestArrayIT extends BaseClientManagedTimeIT {
+@Ignore public abstract class UnnestArrayIT extends BaseClientManagedTimeIT {
 
     private static long timestamp;
 

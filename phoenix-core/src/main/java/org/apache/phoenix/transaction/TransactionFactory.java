@@ -28,7 +28,7 @@ public class TransactionFactory {
 
     static private TransactionFactory transactionFactory = null;
 
-    private TransactionProcessor tp = TransactionProcessor.Tephra;
+    private TransactionProcessor tp = TransactionProcessor.Omid;
 
     enum TransactionProcessor {
         Tephra,
@@ -47,7 +47,7 @@ public class TransactionFactory {
 
     static public TransactionFactory getTransactionFactory() {
         if (transactionFactory == null) {
-            createTransactionFactory(TransactionProcessor.Tephra);
+            createTransactionFactory(TransactionProcessor.Omid);
         }
 
         return transactionFactory;

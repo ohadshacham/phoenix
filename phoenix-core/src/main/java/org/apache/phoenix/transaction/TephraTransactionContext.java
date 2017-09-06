@@ -128,7 +128,7 @@ public class TephraTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
-    public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props, ConnectionInfo connectionInfo) {
+    public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props, ConnectionInfo connectionInfo) throws SQLException {
         String zkQuorumServersString = props.get(TxConstants.Service.CFG_DATA_TX_ZOOKEEPER_QUORUM);
         if (zkQuorumServersString==null) {
             zkQuorumServersString = connectionInfo.getZookeeperQuorum()+":"+connectionInfo.getPort();
@@ -444,6 +444,7 @@ public class TephraTransactionContext implements PhoenixTransactionContext {
         config.setLong(TxConstants.Manager.CFG_TX_SNAPSHOT_INTERVAL, 5L);
     }
 
+    // For testing
     @Override
     public void setupTxManager(Configuration config, String url) throws SQLException {
 
@@ -471,8 +472,8 @@ public class TephraTransactionContext implements PhoenixTransactionContext {
         txService.startAndWait();
     }
 
+    // For testing
     @Override
-
     public void tearDownTxManager() throws SQLException {
         try {
             if (txService != null) txService.stopAndWait();
