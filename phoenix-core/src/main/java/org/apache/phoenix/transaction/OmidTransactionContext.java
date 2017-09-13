@@ -44,7 +44,7 @@ import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
 //import org.apache.omid.tso.TSOMockModule;
-//import org.apache.omid.transaction.OmidCompactor;
+import org.apache.omid.transaction.OmidCompactor;
 //import org.apache.omid.tso.TSOMockModule;
 import org.apache.omid.tso.TSOServer;
 import org.apache.omid.tso.TSOServerConfig;
@@ -81,6 +81,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         if (txnBytes != null && txnBytes.length > 0) {
             TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
             tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+//            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
         } else {
             tx = null;
         }
@@ -98,7 +99,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         if (subTask) {
             if (omidTransactionContext.isTransactionRunning()) {
                 Transaction transaction = omidTransactionContext.getTransaction();
-                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null, transaction.getReadTimestamp(), transaction.getWriteTimestamp());
             } else {
                 this.tx = null;
             }
@@ -307,8 +308,8 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public BaseRegionObserver getCoProcessor() {
-        return null;
-        //return new OmidCompactor();
+//        return null;
+        return new OmidCompactor();
     }
 
     @Override
@@ -320,18 +321,20 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     @Override
     public ZKClientService setTransactionClient(Configuration config, ReadOnlyProps props,
             ConnectionInfo connectionInfo) throws SQLException {
-        try {
-            HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
-            clientConf.setConnectionString("localhost:54758");
-            transactionManager = HBaseTransactionManager.newInstance(clientConf);
-        } catch (IOException | InterruptedException e) {
-            throw new SQLExceptionInfo.Builder(
-                    SQLExceptionCode.TRANSACTION_FAILED)
-                    .setMessage(e.getMessage()).setRootCause(e).build()
-                    .buildException();
+        if (transactionManager == null) {
+            try {
+                HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
+                clientConf.setConnectionString("localhost:54758");
+                transactionManager = HBaseTransactionManager.newInstance(clientConf);
+            } catch (IOException | InterruptedException e) {
+                throw new SQLExceptionInfo.Builder(
+                        SQLExceptionCode.TRANSACTION_FAILED)
+                .setMessage(e.getMessage()).setRootCause(e).build()
+                .buildException();
+            }
         }
+
         return null;
-        
     }
 
     @Override
@@ -373,6 +376,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         clientConf.setConnectionString("localhost:54758");
 
         try {
+//            tsoConfig.getCommitTableStoreModule().
             transactionManager = HBaseTransactionManager.newInstance(clientConf);
         } catch (IOException | InterruptedException e) {
             throw new SQLExceptionInfo.Builder(
