@@ -32,6 +32,8 @@ import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.util.ReadOnlyProps;
 import org.apache.twill.zookeeper.ZKClientService;
 import org.slf4j.Logger;
+import org.apache.omid.committable.CommitTable;
+import org.apache.omid.committable.InMemoryCommitTable;
 import org.apache.omid.proto.TSOProto;
 import org.apache.omid.transaction.AbstractTransaction.VisibilityLevel;
 import org.apache.omid.transaction.CellUtils;
@@ -45,9 +47,13 @@ import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
 //import org.apache.omid.tso.TSOMockModule;
 import org.apache.omid.transaction.OmidCompactor;
+import org.apache.omid.tso.TSOMockModule;
 //import org.apache.omid.tso.TSOMockModule;
 import org.apache.omid.tso.TSOServer;
 import org.apache.omid.tso.TSOServerConfig;
+import org.apache.omid.tso.client.OmidClientConfiguration;
+import org.apache.omid.tso.client.OmidClientConfiguration.ConflictDetectionLevel;
+import org.apache.omid.tso.client.TSOClient;
 
 import com.google.inject.Guice;
 import com.google.inject.Injector;
@@ -55,7 +61,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 
 public class OmidTransactionContext implements PhoenixTransactionContext {
 
-    private static TransactionManager transactionManager = null;
+    private static HBaseTransactionManager transactionManager = null;
 
     private TransactionManager tm;
     private HBaseTransaction tx;
@@ -80,7 +86,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         if (txnBytes != null && txnBytes.length > 0) {
             TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
-            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
+            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), transactionManager);
 //            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
         } else {
             tx = null;
@@ -99,7 +105,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         if (subTask) {
             if (omidTransactionContext.isTransactionRunning()) {
                 Transaction transaction = omidTransactionContext.getTransaction();
-                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null, transaction.getReadTimestamp(), transaction.getWriteTimestamp());
+                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), transactionManager, transaction.getReadTimestamp(), transaction.getWriteTimestamp());
             } else {
                 this.tx = null;
             }
@@ -324,8 +330,8 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         if (transactionManager == null) {
             try {
                 HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
-                clientConf.setConnectionString("localhost:54758");
-                transactionManager = HBaseTransactionManager.newInstance(clientConf);
+                clientConf.setConflictAnalysisLevel(ConflictDetectionLevel.ROW);
+                transactionManager = (HBaseTransactionManager) HBaseTransactionManager.newInstance(clientConf);
             } catch (IOException | InterruptedException e) {
                 throw new SQLExceptionInfo.Builder(
                         SQLExceptionCode.TRANSACTION_FAILED)
@@ -352,38 +358,60 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     @Override
     public void setupTxManager(Configuration config, String url) throws SQLException {
         // TSO Setup
-//        TSOServerConfig tsoConfig = new TSOServerConfig();
-//        tsoConfig.setPort(1234);
-//        tsoConfig.setConflictMapSize(1000);
-//        Injector injector = Guice.createInjector(new TSOMockModule(tsoConfig));
-//        tso = injector.getInstance(TSOServer.class);
-//        tso.startAndWait();
-
         TSOServerConfig tsoConfig = new TSOServerConfig();
-        tsoConfig.setPort(54758);
+        tsoConfig.setPort(1234);
         tsoConfig.setConflictMapSize(1000);
-        try {
-            tso = TSOServer.getInitializedTsoServer(tsoConfig);
-            tso.startAndWait();
-        } catch (Exception e) {
-            throw new SQLExceptionInfo.Builder(
-                    SQLExceptionCode.TRANSACTION_FAILED)
-                    .setMessage(e.getMessage()).setRootCause(e).build()
-                    .buildException();
-        }
+        tsoConfig.setTimestampType("WORLD_TIME");
+        Injector injector = Guice.createInjector(new TSOMockModule(tsoConfig));
+        tso = injector.getInstance(TSOServer.class);
+        tso.startAndWait();
 
-        HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
-        clientConf.setConnectionString("localhost:54758");
+//        TSOServerConfig tsoConfig = new TSOServerConfig();
+//        tsoConfig.setPort(54758);
+//        tsoConfig.setConflictMapSize(1000);
+//        try {
+//            tso = TSOServer.getInitializedTsoServer(tsoConfig);
+//            tso.startAndWait();
+//        } catch (Exception e) {
+//            throw new SQLExceptionInfo.Builder(
+//                    SQLExceptionCode.TRANSACTION_FAILED)
+//                    .setMessage(e.getMessage()).setRootCause(e).build()
+//                    .buildException();
+//        }
+
+        OmidClientConfiguration clientConfig = new OmidClientConfiguration();
+        clientConfig.setConnectionString("localhost:1234");
+        clientConfig.setConflictAnalysisLevel(ConflictDetectionLevel.ROW);
+
+        InMemoryCommitTable commitTable = (InMemoryCommitTable) injector.getInstance(CommitTable.class);
 
         try {
-//            tsoConfig.getCommitTableStoreModule().
-            transactionManager = HBaseTransactionManager.newInstance(clientConf);
+            // Create the associated Handler
+            TSOClient client = TSOClient.newInstance(clientConfig);
+
+            HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
+            clientConf.setConnectionString("localhost:1234");
+            //        clientConf.setHBaseConfiguration(hbaseConf);
+            transactionManager = HBaseTransactionManager.builder(clientConf).commitTableClient(commitTable.getClient())
+                    .tsoClient(client).build();
         } catch (IOException | InterruptedException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
-                    .setMessage(e.getMessage()).setRootCause(e).build()
-                    .buildException();
+            .setMessage(e.getMessage()).setRootCause(e).build()
+            .buildException();
         }
+        
+//        HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
+//        clientConf.setConnectionString("localhost:1234");
+
+//        try {
+//            transactionManager = HBaseTransactionManager.newInstance(clientConf);
+//        } catch (IOException | InterruptedException e) {
+//            throw new SQLExceptionInfo.Builder(
+//                    SQLExceptionCode.TRANSACTION_FAILED)
+//                    .setMessage(e.getMessage()).setRootCause(e).build()
+//                    .buildException();
+//        }
     }
 
     // For testing
