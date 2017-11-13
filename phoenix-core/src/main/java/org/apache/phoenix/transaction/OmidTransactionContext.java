@@ -41,6 +41,7 @@ import org.apache.omid.transaction.HBaseCellId;
 import org.apache.omid.transaction.HBaseOmidClientConfiguration;
 import org.apache.omid.transaction.HBaseTransaction;
 import org.apache.omid.transaction.HBaseTransactionManager;
+import org.apache.omid.transaction.OmidSnapshotFilter;
 import org.apache.omid.transaction.RollbackException;
 import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
@@ -65,6 +66,8 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     private TransactionManager tm;
     private HBaseTransaction tx;
+    private InMemoryCommitTable commitTable;
+    private CommitTable.Client commitTableClient = null;
 
     private static final long MAX_NON_TX_TIMESTAMP = (long) (System.currentTimeMillis() * 1.1);
 
@@ -86,7 +89,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         if (txnBytes != null && txnBytes.length > 0) {
             TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
-            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), transactionManager);
+            tx = new HBaseTransaction(transaction.getTimestamp(), transaction.getEpoch(), new HashSet<HBaseCellId>(), transactionManager);
 //            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
         } else {
             tx = null;
@@ -285,7 +288,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         assert(tx != null && tx instanceof HBaseTransaction);
         ((HBaseTransaction) tx).setVisibilityLevel(omidVisibilityLevel);
-        
+
     }
 
     @Override
@@ -294,7 +297,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         TSOProto.Transaction.Builder transactionBuilder = TSOProto.Transaction.newBuilder();
 
-        transactionBuilder.setTransactionId(tx.getTransactionId());
+        transactionBuilder.setTimestamp(tx.getTransactionId());
         transactionBuilder.setEpoch(tx.getEpoch());
 
         return transactionBuilder.build().toByteArray();
@@ -316,6 +319,16 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     public BaseRegionObserver getCoProcessor() {
 //        return null;
         return new OmidCompactor();
+//        TSOServerConfig tsoConfig = new TSOServerConfig();
+//        tsoConfig.setPort(1234);
+//        tsoConfig.setConflictMapSize(1000);
+//        tsoConfig.setTimestampType("WORLD_TIME");
+//        Injector injector = Guice.createInjector(new TSOMockModule(tsoConfig));
+//        tso = injector.getInstance(TSOServer.class);
+//
+//        commitTable = (InMemoryCommitTable) injector.getInstance(CommitTable.class);
+//        commitTableClient = commitTable.getClient();
+//        return new OmidSnapshotFilter(commitTableClient);
     }
 
     @Override
@@ -392,7 +405,8 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
             HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
             clientConf.setConnectionString("localhost:1234");
             //        clientConf.setHBaseConfiguration(hbaseConf);
-            transactionManager = HBaseTransactionManager.builder(clientConf).commitTableClient(commitTable.getClient())
+            this.commitTableClient = commitTable.getClient();
+            transactionManager = HBaseTransactionManager.builder(clientConf).commitTableClient(commitTableClient)
                     .tsoClient(client).build();
         } catch (IOException | InterruptedException e) {
             throw new SQLExceptionInfo.Builder(

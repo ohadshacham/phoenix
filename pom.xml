@@ -834,13 +834,18 @@
         <artifactId>omid-hbase-client</artifactId>
         <version>${omid.version}</version>
       </dependency>
-<!--
       <dependency>
         <groupId>org.apache.omid</groupId>
         <artifactId>omid-hbase-coprocessor</artifactId>
         <version>${omid.version}</version>
       </dependency>
--->
+  <dependency>
+    <groupId>org.apache.omid</groupId>
+    <artifactId>omid-tso-server</artifactId>
+    <version>${omid.version}</version>
+    <type>test-jar</type>
+  </dependency>
+
 
       <!-- Make sure we have all the antlr dependencies -->
       <dependency>

@@ -71,7 +71,7 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
         OmidTransactionContext omidTransactionContext = (OmidTransactionContext) ctx;
 
         try {
-            tTable = new TTable(hTable);
+            tTable = new TTable(hTable, false);
         } catch (IOException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
