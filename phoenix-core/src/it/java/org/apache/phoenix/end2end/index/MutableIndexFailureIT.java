@@ -23,8 +23,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.io.IOException;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -36,7 +36,6 @@ import java.util.Properties;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.DoNotRetryIOException;
-import org.apache.hadoop.hbase.HBaseIOException;
 import org.apache.hadoop.hbase.HConstants;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.coprocessor.ObserverContext;
@@ -44,17 +43,24 @@ import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.coprocessor.SimpleRegionObserver;
 import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.phoenix.coprocessor.MetaDataRegionObserver;
+import org.apache.phoenix.coprocessor.MetaDataRegionObserver.BuildIndexScheduleTask;
 import org.apache.phoenix.end2end.NeedsOwnMiniClusterTest;
 import org.apache.phoenix.execute.CommitException;
 import org.apache.phoenix.hbase.index.write.IndexWriterUtils;
 import org.apache.phoenix.index.PhoenixIndexFailurePolicy;
+import org.apache.phoenix.jdbc.PhoenixConnection;
+import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.BaseTest;
 import org.apache.phoenix.query.QueryConstants;
 import org.apache.phoenix.query.QueryServices;
 import org.apache.phoenix.query.QueryServicesOptions;
 import org.apache.phoenix.schema.PIndexState;
+import org.apache.phoenix.schema.PTable;
+import org.apache.phoenix.schema.PTableKey;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.SortOrder;
+import org.apache.phoenix.util.IndexScrutiny;
 import org.apache.phoenix.util.MetaDataUtil;
 import org.apache.phoenix.util.PhoenixRuntime;
 import org.apache.phoenix.util.PropertiesUtil;
@@ -83,9 +89,6 @@ import com.google.common.collect.Maps;
 @Category(NeedsOwnMiniClusterTest.class)
 @RunWith(Parameterized.class)
 public class MutableIndexFailureIT extends BaseTest {
-    public static final String INDEX_NAME = "IDX";
-    public static final String TABLE_NAME = "T";
-
     public static volatile boolean FAIL_WRITE = false;
     public static volatile String fullTableName;
     
@@ -98,18 +101,20 @@ public class MutableIndexFailureIT extends BaseTest {
     private final String tableDDLOptions;
     private final boolean isNamespaceMapped;
     private final boolean leaveIndexActiveOnFailure;
-    private final boolean rebuildIndexOnWriteFailure;
     private final boolean failRebuildTask;
     private final boolean throwIndexWriteFailure;
     private String schema = generateUniqueName();
     private List<CommitException> exceptions = Lists.newArrayList();
+    private static RegionCoprocessorEnvironment indexRebuildTaskRegionEnvironment;
+    private static final int forwardOverlapMs = 1000;
+    private static final int disableTimestampThresholdMs = 10000;
+    private static final int numRpcRetries = 2;
 
-    public MutableIndexFailureIT(boolean transactional, boolean localIndex, boolean isNamespaceMapped, Boolean disableIndexOnWriteFailure, Boolean rebuildIndexOnWriteFailure, boolean failRebuildTask, Boolean throwIndexWriteFailure) {
+    public MutableIndexFailureIT(boolean transactional, boolean localIndex, boolean isNamespaceMapped, Boolean disableIndexOnWriteFailure, boolean failRebuildTask, Boolean throwIndexWriteFailure) {
         this.transactional = transactional;
         this.localIndex = localIndex;
         this.tableDDLOptions = " SALT_BUCKETS=2 " + (transactional ? ", TRANSACTIONAL=true " : "") 
                 + (disableIndexOnWriteFailure == null ? "" : (", " + PhoenixIndexFailurePolicy.DISABLE_INDEX_ON_WRITE_FAILURE + "=" + disableIndexOnWriteFailure))
-                + (rebuildIndexOnWriteFailure == null ? "" : (", " + PhoenixIndexFailurePolicy.REBUILD_INDEX_ON_WRITE_FAILURE + "=" + rebuildIndexOnWriteFailure))
                 + (throwIndexWriteFailure == null ? "" : (", " + PhoenixIndexFailurePolicy.THROW_INDEX_WRITE_FAILURE + "=" + throwIndexWriteFailure));
         this.tableName = FailingRegionObserver.FAIL_TABLE_NAME;
         this.indexName = "A_" + FailingRegionObserver.FAIL_INDEX_NAME;
@@ -117,7 +122,6 @@ public class MutableIndexFailureIT extends BaseTest {
         this.fullIndexName = SchemaUtil.getTableName(schema, indexName);
         this.isNamespaceMapped = isNamespaceMapped;
         this.leaveIndexActiveOnFailure = ! (disableIndexOnWriteFailure == null ? QueryServicesOptions.DEFAULT_INDEX_FAILURE_DISABLE_INDEX : disableIndexOnWriteFailure);
-        this.rebuildIndexOnWriteFailure = ! Boolean.FALSE.equals(rebuildIndexOnWriteFailure);
         this.failRebuildTask = failRebuildTask;
         this.throwIndexWriteFailure = ! Boolean.FALSE.equals(throwIndexWriteFailure);
     }
@@ -131,51 +135,100 @@ public class MutableIndexFailureIT extends BaseTest {
         serverProps.put(IndexWriterUtils.INDEX_WRITER_RPC_PAUSE, "5000");
         serverProps.put("data.tx.snapshot.dir", "/tmp");
         serverProps.put("hbase.balancer.period", String.valueOf(Integer.MAX_VALUE));
-        serverProps.put(QueryServices.INDEX_FAILURE_HANDLING_REBUILD_ATTRIB, Boolean.TRUE.toString());
-        serverProps.put(QueryServices.INDEX_FAILURE_HANDLING_REBUILD_INTERVAL_ATTRIB, "4000");
-        serverProps.put(QueryServices.INDEX_REBUILD_DISABLE_TIMESTAMP_THRESHOLD, "30000"); // give up rebuilding after 30 seconds
         // need to override rpc retries otherwise test doesn't pass
-        serverProps.put(QueryServices.INDEX_REBUILD_RPC_RETRIES_COUNTER, Long.toString(1));
-        serverProps.put(QueryServices.INDEX_FAILURE_HANDLING_REBUILD_OVERLAP_FORWARD_TIME_ATTRIB, Long.toString(1000));
+        serverProps.put(QueryServices.INDEX_REBUILD_RPC_RETRIES_COUNTER, Long.toString(numRpcRetries));
+        serverProps.put(QueryServices.INDEX_FAILURE_HANDLING_REBUILD_OVERLAP_FORWARD_TIME_ATTRIB, Long.toString(forwardOverlapMs));
+        serverProps.put(QueryServices.INDEX_REBUILD_DISABLE_TIMESTAMP_THRESHOLD, Long.toString(disableTimestampThresholdMs));
+        /*
+         * Effectively disable running the index rebuild task by having an infinite delay
+         * because we want to control it's execution ourselves
+         */
+        serverProps.put(QueryServices.INDEX_REBUILD_TASK_INITIAL_DELAY, Long.toString(Long.MAX_VALUE));
         Map<String, String> clientProps = Collections.singletonMap(QueryServices.TRANSACTIONS_ENABLED, Boolean.TRUE.toString());
         NUM_SLAVES_BASE = 4;
         setUpTestDriver(new ReadOnlyProps(serverProps.entrySet().iterator()), new ReadOnlyProps(clientProps.entrySet().iterator()));
+        indexRebuildTaskRegionEnvironment =
+                (RegionCoprocessorEnvironment) getUtility()
+                        .getRSForFirstRegionInTable(
+                            PhoenixDatabaseMetaData.SYSTEM_CATALOG_HBASE_TABLE_NAME)
+                        .getOnlineRegions(PhoenixDatabaseMetaData.SYSTEM_CATALOG_HBASE_TABLE_NAME)
+                        .get(0).getCoprocessorHost()
+                        .findCoprocessorEnvironment(MetaDataRegionObserver.class.getName());
+        MetaDataRegionObserver.initRebuildIndexConnectionProps(
+            indexRebuildTaskRegionEnvironment.getConfiguration());
     }
 
-    @Parameters(name = "MutableIndexFailureIT_transactional={0},localIndex={1},isNamespaceMapped={2},disableIndexOnWriteFailure={3},rebuildIndexOnWriteFailure={4},failRebuildTask={5},throwIndexWriteFailure={6}") // name is used by failsafe as file name in reports
+    @Parameters(name = "MutableIndexFailureIT_transactional={0},localIndex={1},isNamespaceMapped={2},disableIndexOnWriteFailure={3},failRebuildTask={4},throwIndexWriteFailure={5}") // name is used by failsafe as file name in reports
     public static List<Object[]> data() {
         return Arrays.asList(new Object[][] { 
-                { false, false, false, true, true, false, false},
-                { false, false, true, true, true, false, null},
-                { false, false, true, true, true, false, true},
-                { false, false, false, true, true, false, null},
-                { true, false, false, true, true, false, null},
-                { true, false, true, true, true, false, null},
-                { false, true, true, true, true, false, null},
-                { false, true, false, null, null, false, null},
-                { true, true, false, true, null, false, null},
-                { true, true, true, null, true, false, null},
+                { false, false, false, true, false, false},
+                { false, false, true, true, false, null},
+                { false, false, true, true, false, true},
+                { false, false, false, true, false, null},
+                { true, false, false, true, false, null},
+                { true, false, true, true, false, null},
+                { false, true, true, true, false, null},
+                { false, true, false, null, false, null},
+                { true, true, false, true, false, null},
+                { true, true, true, null, false, null},
 
-                { false, false, false, false, true, false, null},
-                { false, true, false, false, null, false, null},
-                { false, false, false, false, false, false, null},
-                { false, false, false, true, true, false, null},
-                { false, false, false, true, true, false, null},
-                { false, true, false, true, true, false, null},
-                { false, true, false, true, true, false, null},
-                { false, false, false, true, true, true, null},
-                { false, false, true, true, true, true, null},
-                { false, false, false, true, true, true, false},
-                { false, false, true, true, true, true, false},
+                { false, false, false, false, false, null},
+                { false, true, false, false, false, null},
+                { false, false, false, false, false, null},
+                { false, false, false, true, false, null},
+                { false, false, false, true, false, null},
+                { false, true, false, true, false, null},
+                { false, true, false, true, false, null},
+                { false, false, false, true, true, null},
+                { false, false, true, true, true, null},
+                { false, false, false, true, true, false},
+                { false, false, true, true, true, false},
                 } 
         );
+    }
+
+    private void runRebuildTask(Connection conn) throws InterruptedException, SQLException {
+        BuildIndexScheduleTask task =
+                new MetaDataRegionObserver.BuildIndexScheduleTask(
+                        indexRebuildTaskRegionEnvironment);
+        dumpStateOfIndexes(conn, fullTableName, true);
+        task.run();
+        dumpStateOfIndexes(conn, fullTableName, false);
+        Thread.sleep(forwardOverlapMs + 100);
+        if (failRebuildTask) {
+            Thread.sleep(disableTimestampThresholdMs + 100);
+        }
+        dumpStateOfIndexes(conn, fullTableName, true);
+        task.run();
+        dumpStateOfIndexes(conn, fullTableName, false);
+    }
+
+    private static final void dumpStateOfIndexes(Connection conn, String tableName,
+            boolean beforeRebuildTaskRun) throws SQLException {
+        PhoenixConnection phxConn = conn.unwrap(PhoenixConnection.class);
+        PTable table = phxConn.getTable(new PTableKey(phxConn.getTenantId(), tableName));
+        List<PTable> indexes = table.getIndexes();
+        String s = beforeRebuildTaskRun ? "before rebuild run" : "after rebuild run";
+        System.out.println("************Index state in connection " + s + "******************");
+        for (PTable idx : indexes) {
+            System.out.println(
+                "Index Name: " + idx.getName().getString() + " State: " + idx.getIndexState()
+                        + " Disable timestamp: " + idx.getIndexDisableTimestamp());
+        }
+        System.out.println("************Index state from server  " + s + "******************");
+        table = PhoenixRuntime.getTableNoCache(phxConn, fullTableName);
+        for (PTable idx : table.getIndexes()) {
+            System.out.println(
+                "Index Name: " + idx.getName().getString() + " State: " + idx.getIndexState()
+                        + " Disable timestamp: " + idx.getIndexDisableTimestamp());
+        }
     }
 
     @Test
     public void testIndexWriteFailure() throws Exception {
         String secondIndexName = "B_" + FailingRegionObserver.FAIL_INDEX_NAME;
-//        String thirdIndexName = "C_" + INDEX_NAME;
-//        String thirdFullIndexName = SchemaUtil.getTableName(schema, thirdIndexName);
+        String thirdIndexName = "C_IDX";
+        String thirdFullIndexName = SchemaUtil.getTableName(schema, thirdIndexName);
         Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
         props.put(QueryServices.IS_NAMESPACE_MAPPING_ENABLED, String.valueOf(isNamespaceMapped));
         try (Connection conn = driver.connect(url, props)) {
@@ -198,8 +251,8 @@ public class MutableIndexFailureIT extends BaseTest {
             // check the drop index.
             conn.createStatement().execute(
                     "CREATE "  + (!localIndex ? "LOCAL " : "") + " INDEX " + secondIndexName + " ON " + fullTableName + " (v2) INCLUDE (v1)");
-//            conn.createStatement().execute(
-//                    "CREATE " + (localIndex ? "LOCAL " : "") + " INDEX " + thirdIndexName + " ON " + fullTableName + " (v1) INCLUDE (v2)");
+            conn.createStatement().execute(
+                    "CREATE " + (localIndex ? "LOCAL " : "") + " INDEX " + thirdIndexName + " ON " + fullTableName + " (v1) INCLUDE (v2)");
 
             query = "SELECT * FROM " + fullIndexName;
             rs = conn.createStatement().executeQuery(query);
@@ -214,9 +267,9 @@ public class MutableIndexFailureIT extends BaseTest {
             assertTrue(rs.next());
             assertEquals(secondIndexName, rs.getString(3));
             assertEquals(PIndexState.ACTIVE.toString(), rs.getString("INDEX_STATE"));
-//            assertTrue(rs.next());
-//            assertEquals(thirdIndexName, rs.getString(3));
-//            assertEquals(PIndexState.ACTIVE.toString(), rs.getString("INDEX_STATE"));
+            assertTrue(rs.next());
+            assertEquals(thirdIndexName, rs.getString(3));
+            assertEquals(PIndexState.ACTIVE.toString(), rs.getString("INDEX_STATE"));
             initializeTable(conn, fullTableName);
             
             query = "SELECT /*+ NO_INDEX */ k,v1 FROM " + fullTableName;
@@ -244,11 +297,15 @@ public class MutableIndexFailureIT extends BaseTest {
             assertTrue(rs.next());
             assertEquals(indexName, rs.getString(3));
             // the index is only disabled for non-txn tables upon index table write failure
+            String indexState = rs.getString("INDEX_STATE");
             if (transactional || leaveIndexActiveOnFailure || localIndex) {
-                assertEquals(PIndexState.ACTIVE.toString(), rs.getString("INDEX_STATE"));
+                assertTrue(PIndexState.ACTIVE.toString().equalsIgnoreCase(indexState) || PIndexState.PENDING_ACTIVE.toString().equalsIgnoreCase(indexState));
             } else {
-                String indexState = rs.getString("INDEX_STATE");
                 assertTrue(PIndexState.DISABLE.toString().equals(indexState) || PIndexState.INACTIVE.toString().equals(indexState));
+                // non-failing index should remain active
+                ResultSet thirdRs = conn.createStatement().executeQuery(getSysCatQuery(thirdIndexName));
+                assertTrue(thirdRs.next());
+                assertEquals(PIndexState.ACTIVE.getSerializedValue(), thirdRs.getString(1));
             }
             assertFalse(rs.next());
 
@@ -256,7 +313,7 @@ public class MutableIndexFailureIT extends BaseTest {
             // in an all or none manner. If the table is not transactional, then the data writes
             // would have succeeded while the index writes would have failed.
             if (!transactional) {
-                updateTableAgain(conn, leaveIndexActiveOnFailure);
+                updateTableAgain(conn, false);
                 // Verify previous writes succeeded to data table
                 query = "SELECT /*+ NO_INDEX */ k,v1 FROM " + fullTableName;
                 rs = conn.createStatement().executeQuery("EXPLAIN " + query);
@@ -278,20 +335,14 @@ public class MutableIndexFailureIT extends BaseTest {
                 assertEquals("d", rs.getString(2));
                 assertFalse(rs.next());
             }
-            // Comment back in when PHOENIX-3815 is fixed
-//            validateDataWithIndex(conn, fullTableName, thirdFullIndexName, false);
+            IndexScrutiny.scrutinizeIndex(conn, fullTableName, thirdFullIndexName);
 
             if (!failRebuildTask) {
                 // re-enable index table
                 FailingRegionObserver.FAIL_WRITE = false;
-                if (rebuildIndexOnWriteFailure) {
-                    // wait for index to be rebuilt automatically
-                    waitForIndexRebuild(conn,fullIndexName, PIndexState.ACTIVE);
-                } else {
-                    // simulate replaying failed mutation
-                    replayMutations();
-                }
-
+                runRebuildTask(conn);
+                // wait for index to be rebuilt automatically
+                checkStateAfterRebuild(conn, fullIndexName, PIndexState.ACTIVE);
                 // Verify UPSERT on data table still works after index table is caught up
                 PreparedStatement stmt = conn.prepareStatement("UPSERT INTO " + fullTableName + " VALUES(?,?,?)");
                 stmt.setString(1, "a3");
@@ -306,13 +357,11 @@ public class MutableIndexFailureIT extends BaseTest {
                 // Wait for index to be rebuilt automatically. This should fail because
                 // we haven't flipped the FAIL_WRITE flag to false and as a result this
                 // should cause index rebuild to fail too.
-                waitForIndexRebuild(conn, fullIndexName, PIndexState.DISABLE);
+                runRebuildTask(conn);
+                checkStateAfterRebuild(conn, fullIndexName, PIndexState.DISABLE);
                 // verify that the index was marked as disabled and the index disable
                 // timestamp set to 0
-                String q =
-                        "SELECT INDEX_STATE, INDEX_DISABLE_TIMESTAMP FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = '"
-                                + schema + "' AND TABLE_NAME = '" + indexName + "'"
-                                + " AND COLUMN_NAME IS NULL AND COLUMN_FAMILY IS NULL";
+                String q = getSysCatQuery(indexName);
                 try (ResultSet r = conn.createStatement().executeQuery(q)) {
                     assertTrue(r.next());
                     assertEquals(PIndexState.DISABLE.getSerializedValue(), r.getString(1));
@@ -321,12 +370,23 @@ public class MutableIndexFailureIT extends BaseTest {
                 }
 
             }
+        } finally {
+            FAIL_WRITE = false;
         }
     }
 
-    private void waitForIndexRebuild(Connection conn, String fullIndexName, PIndexState expectedIndexState) throws InterruptedException, SQLException {
+    private String getSysCatQuery(String iName) {
+        String q =
+                "SELECT INDEX_STATE, INDEX_DISABLE_TIMESTAMP FROM SYSTEM.CATALOG WHERE TABLE_SCHEM = '"
+                        + schema + "' AND TABLE_NAME = '" + iName + "'"
+                        + " AND COLUMN_NAME IS NULL AND COLUMN_FAMILY IS NULL";
+        return q;
+    }
+
+
+    private void checkStateAfterRebuild(Connection conn, String fullIndexName, PIndexState expectedIndexState) throws InterruptedException, SQLException {
         if (!transactional) {
-            TestUtil.waitForIndexRebuild(conn, fullIndexName, expectedIndexState);
+            assertTrue(TestUtil.checkIndexState(conn,fullIndexName, expectedIndexState, 0l));
         }
     }
     
@@ -389,25 +449,7 @@ public class MutableIndexFailureIT extends BaseTest {
             assertFalse(rs.next());
         }
     }
-    
-    private void replayMutations() throws SQLException {
-        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
-        for (int i = 0; i < exceptions.size(); i++) {
-            CommitException e = exceptions.get(i);
-            long ts = e.getServerTimestamp();
-            props.setProperty(PhoenixRuntime.REPLAY_AT_ATTRIB, Long.toString(ts));
-            try (Connection conn = DriverManager.getConnection(getUrl(), props)) {
-                if (i == 0) {
-                    updateTable(conn, false);
-                } else if (i == 1) {
-                    updateTableAgain(conn, false);
-                } else {
-                    fail();
-                }
-            }
-        }
-    }
-    
+
     private void updateTable(Connection conn, boolean commitShouldFail) throws SQLException {
         PreparedStatement stmt = conn.prepareStatement("UPSERT INTO " + fullTableName + " VALUES(?,?,?)");
         // Insert new row
@@ -464,7 +506,7 @@ public class MutableIndexFailureIT extends BaseTest {
         public static final String FAIL_TABLE_NAME = "FAIL_TABLE";
 
         @Override
-        public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c, MiniBatchOperationInProgress<Mutation> miniBatchOp) throws HBaseIOException {
+        public void preBatchMutate(ObserverContext<RegionCoprocessorEnvironment> c, MiniBatchOperationInProgress<Mutation> miniBatchOp) throws IOException {
             boolean throwException = false;
             if (c.getEnvironment().getRegionInfo().getTable().getNameAsString().endsWith("A_" + FAIL_INDEX_NAME)
                     && FAIL_WRITE) {

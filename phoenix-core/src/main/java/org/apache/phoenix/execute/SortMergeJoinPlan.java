@@ -18,6 +18,7 @@
 package org.apache.phoenix.execute;
 
 import static org.apache.phoenix.util.NumberUtil.add;
+import static org.apache.phoenix.util.NumberUtil.getMin;
 
 import java.io.IOException;
 import java.nio.MappedByteBuffer;
@@ -53,6 +54,7 @@ import org.apache.phoenix.iterate.ParallelScanGrouper;
 import org.apache.phoenix.iterate.ResultIterator;
 import org.apache.phoenix.jdbc.PhoenixParameterMetaData;
 import org.apache.phoenix.jdbc.PhoenixStatement.Operation;
+import org.apache.phoenix.optimize.Cost;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.JoinTableNode.JoinType;
 import org.apache.phoenix.query.KeyRange;
@@ -92,6 +94,7 @@ public class SortMergeJoinPlan implements QueryPlan {
     private final int thresholdBytes;
     private Long estimatedBytes;
     private Long estimatedRows;
+    private Long estimateInfoTs;
     private boolean explainPlanCalled;
 
     public SortMergeJoinPlan(StatementContext context, FilterableStatement statement, TableRef table, 
@@ -164,9 +167,46 @@ public class SortMergeJoinPlan implements QueryPlan {
         for (String step : rhsPlan.getExplainPlan().getPlanSteps()) {
             steps.add("    " + step);            
         }
-        estimatedBytes = add(add(estimatedBytes, lhsPlan.getEstimatedBytesToScan()), rhsPlan.getEstimatedBytesToScan());
-        estimatedRows = add(add(estimatedRows, lhsPlan.getEstimatedRowsToScan()), rhsPlan.getEstimatedRowsToScan());
+        if ((lhsPlan.getEstimatedBytesToScan() == null || rhsPlan.getEstimatedBytesToScan() == null)
+                || (lhsPlan.getEstimatedRowsToScan() == null
+                        || rhsPlan.getEstimatedRowsToScan() == null)
+                || (lhsPlan.getEstimateInfoTimestamp() == null
+                        || rhsPlan.getEstimateInfoTimestamp() == null)) {
+            /*
+             * If any of the sub plans doesn't have the estimate info available, then we don't
+             * provide estimate for the overall plan
+             */
+            estimatedBytes = null;
+            estimatedRows = null;
+            estimateInfoTs = null;
+        } else {
+            estimatedBytes =
+                    add(add(estimatedBytes, lhsPlan.getEstimatedBytesToScan()),
+                        rhsPlan.getEstimatedBytesToScan());
+            estimatedRows =
+                    add(add(estimatedRows, lhsPlan.getEstimatedRowsToScan()),
+                        rhsPlan.getEstimatedRowsToScan());
+            estimateInfoTs =
+                    getMin(lhsPlan.getEstimateInfoTimestamp(), rhsPlan.getEstimateInfoTimestamp());
+        }
         return new ExplainPlan(steps);
+    }
+
+    @Override
+    public Cost getCost() {
+        Long byteCount = null;
+        try {
+            byteCount = getEstimatedBytesToScan();
+        } catch (SQLException e) {
+            // ignored.
+        }
+
+        if (byteCount == null) {
+            return Cost.UNKNOWN;
+        }
+
+        Cost cost = new Cost(0, 0, byteCount);
+        return cost.plus(lhsPlan.getCost()).plus(rhsPlan.getCost());
     }
 
     @Override
@@ -726,5 +766,13 @@ public class SortMergeJoinPlan implements QueryPlan {
             getExplainPlan();
         }
         return estimatedBytes;
+    }
+
+    @Override
+    public Long getEstimateInfoTimestamp() throws SQLException {
+        if (!explainPlanCalled) {
+            getExplainPlan();
+        }
+        return estimateInfoTs;
     }
 }

@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.phoenix</groupId>
   <artifactId>phoenix</artifactId>
-  <version>4.12.0-HBase-1.3-SNAPSHOT</version>
+  <version>4.14.0-HBase-1.3-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Apache Phoenix</name>
   <description>A SQL layer over HBase</description>
@@ -92,7 +92,6 @@
     <jcip-annotations.version>1.0-1</jcip-annotations.version>
     <jline.version>2.11</jline.version>
     <snappy.version>0.3</snappy.version>
-    <netty.version>4.0.23.Final</netty.version>
     <commons-codec.version>1.7</commons-codec.version>
     <htrace.version>3.1.0-incubating</htrace.version>
     <collections.version>3.2.2</collections.version>
@@ -101,13 +100,14 @@
     <joni.version>2.1.2</joni.version>
     <avatica.version>1.10.0</avatica.version>
     <jettyVersion>8.1.7.v20120910</jettyVersion>
-    <!-- <tephra.version>0.13.0-incubating-SNAPSHOT</tephra.version> -->
-    <tephra.version>0.12.0-incubating</tephra.version>
+    <tephra.version>0.13.0-incubating</tephra.version>
+    <!-- <tephra.version>0.12.0-incubating</tephra.version> -->
     <omid.version>0.8.2.11-SNAPSHOT</omid.version>
     <spark.version>2.0.2</spark.version>
     <scala.version>2.11.8</scala.version>
     <scala.binary.version>2.11</scala.binary.version>
-
+    <stream.version>2.9.5</stream.version>
+    <i18n-util.version>1.0.1</i18n-util.version>
     <!-- Test Dependencies -->
     <mockito-all.version>1.8.5</mockito-all.version>
     <junit.version>4.12</junit.version>
@@ -250,12 +250,6 @@
                 <shutdown>kill</shutdown>
                 <testSourceDirectory>${basedir}/src/it/java</testSourceDirectory>
                 <groups>org.apache.phoenix.end2end.ParallelStatsEnabledTest</groups>
-                <properties>
-                  <property>
-                    <name>listener</name>
-                    <value>org.apache.phoenix.end2end.ParallelRunListener</value>
-                  </property>
-                </properties>
               </configuration>
               <goals>
                 <goal>integration-test</goal>
@@ -285,36 +279,6 @@
                 <shutdown>kill</shutdown>
                 <testSourceDirectory>${basedir}/src/it/java</testSourceDirectory>
                 <groups>org.apache.phoenix.end2end.ParallelStatsDisabledTest</groups>
-                <properties>
-                  <property>
-                    <name>listener</name>
-                    <value>org.apache.phoenix.end2end.ParallelRunListener</value>
-                  </property>
-                </properties>
-              </configuration>
-              <goals>
-                <goal>integration-test</goal>
-                <goal>verify</goal>
-              </goals>
-            </execution>
-            <execution>
-              <id>ClientManagedTimeTests</id>
-                <configuration>
-                <encoding>UTF-8</encoding>
-                <forkCount>${numForkedIT}</forkCount>
-                <runOrder>alphabetical</runOrder>
-                <reuseForks>true</reuseForks>
-                <argLine>-enableassertions -Xmx2500m -XX:MaxPermSize=128m -Djava.security.egd=file:/dev/./urandom "-Djava.library.path=${hadoop.library.path}${path.separator}${java.library.path}" -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=./target/</argLine>
-                <redirectTestOutputToFile>${test.output.tofile}</redirectTestOutputToFile>
-                <testSourceDirectory>${basedir}/src/it/java</testSourceDirectory>
-                <groups>org.apache.phoenix.end2end.ClientManagedTimeTest</groups>
-                <shutdown>kill</shutdown>
-                <properties>
-                  <property>
-                    <name>listener</name>
-                    <value>org.apache.phoenix.end2end.ParallelRunListener</value>
-                  </property>
-                </properties>
               </configuration>
               <goals>
                 <goal>integration-test</goal>
@@ -351,12 +315,6 @@
                  <testSourceDirectory>${basedir}/src/it/java</testSourceDirectory>
                  <groups>org.apache.phoenix.end2end.NeedsOwnMiniClusterTest</groups>
                  <shutdown>kill</shutdown>
-                <properties>
-                  <property>
-                    <name>listener</name>
-                    <value>org.apache.phoenix.end2end.ParallelRunListener</value>
-                  </property>
-                </properties>
               </configuration>
               <goals>
                  <goal>integration-test</goal>
@@ -821,7 +779,7 @@
       </dependency>
       <dependency>
         <groupId>org.apache.tephra</groupId>
-        <artifactId>tephra-hbase-compat-1.1</artifactId>
+        <artifactId>tephra-hbase-compat-1.3</artifactId>
         <version>${tephra.version}</version>
       </dependency>
  <dependency>
@@ -960,11 +918,6 @@
         <version>${htrace.version}</version>
       </dependency>
       <dependency>
-        <groupId>io.netty</groupId>
-        <artifactId>netty-all</artifactId>
-        <version>${netty.version}</version>
-      </dependency>
-      <dependency>
         <groupId>commons-codec</groupId>
         <artifactId>commons-codec</artifactId>
         <version>${commons-codec.version}</version>
@@ -993,6 +946,16 @@
         <groupId>org.apache.curator</groupId>
         <artifactId>curator-client</artifactId>
         <version>${curator.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.clearspring.analytics</groupId>
+        <artifactId>stream</artifactId>
+        <version>${stream.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.salesforce.i18n</groupId>
+        <artifactId>i18n-util</artifactId>
+        <version>${i18n-util.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

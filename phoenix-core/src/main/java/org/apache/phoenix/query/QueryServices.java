@@ -74,7 +74,6 @@ public interface QueryServices extends SQLCloseable {
     public static final String SCAN_RESULT_CHUNK_SIZE = "phoenix.query.scanResultChunkSize";
 
     public static final String MAX_MEMORY_PERC_ATTRIB = "phoenix.query.maxGlobalMemoryPercentage";
-    public static final String MAX_MEMORY_WAIT_MS_ATTRIB = "phoenix.query.maxGlobalMemoryWaitMs";
     public static final String MAX_TENANT_MEMORY_PERC_ATTRIB = "phoenix.query.maxTenantMemoryPercentage";
     public static final String MAX_SERVER_CACHE_SIZE_ATTRIB = "phoenix.query.maxServerCacheBytes";
     public static final String DATE_FORMAT_TIMEZONE_ATTRIB = "phoenix.query.dateFormatTimeZone";
@@ -140,6 +139,7 @@ public interface QueryServices extends SQLCloseable {
     // Time interval to check if there is an index needs to be rebuild
     public static final String INDEX_FAILURE_HANDLING_REBUILD_INTERVAL_ATTRIB =
         "phoenix.index.failure.handling.rebuild.interval";
+    public static final String INDEX_REBUILD_TASK_INITIAL_DELAY = "phoenix.index.rebuild.task.initial.delay";
     
     public static final String INDEX_FAILURE_HANDLING_REBUILD_NUMBER_OF_BATCHES_PER_TABLE = "phoenix.index.rebuild.batch.perTable";
     // If index disable timestamp is older than this threshold, then index rebuild task won't attempt to rebuild it
@@ -161,6 +161,10 @@ public interface QueryServices extends SQLCloseable {
     public static final String INDEX_PRIOIRTY_ATTRIB = "phoenix.index.rpc.priority";
     public static final String METADATA_PRIOIRTY_ATTRIB = "phoenix.metadata.rpc.priority";
     public static final String ALLOW_LOCAL_INDEX_ATTRIB = "phoenix.index.allowLocalIndex";
+
+    // Retries when doing server side writes to SYSTEM.CATALOG
+    public static final String METADATA_WRITE_RETRIES_NUMBER = "phoenix.metadata.rpc.retries.number";
+    public static final String METADATA_WRITE_RETRY_PAUSE = "phoenix.metadata.rpc.pause";
 
     // Config parameters for for configuring tracing
     public static final String TRACING_FREQ_ATTRIB = "phoenix.trace.frequency";
@@ -256,9 +260,13 @@ public interface QueryServices extends SQLCloseable {
     
     //currently BASE64 and ASCII is supported
     public static final String UPLOAD_BINARY_DATA_TYPE_ENCODING = "phoenix.upload.binaryDataType.encoding";
+    // Toggle for server-written updates to SYSTEM.CATALOG
+    public static final String PHOENIX_ACLS_ENABLED = "phoenix.acls.enabled";
 
     public static final String INDEX_ASYNC_BUILD_ENABLED = "phoenix.index.async.build.enabled";
-    
+
+    public static final String MAX_INDEXES_PER_TABLE = "phoenix.index.maxIndexesPerTable";
+
     public static final String CLIENT_CACHE_ENCODING = "phoenix.table.client.cache.encoding";
     public static final String AUTO_UPGRADE_ENABLED = "phoenix.autoupgrade.enabled";
 
@@ -272,6 +280,7 @@ public interface QueryServices extends SQLCloseable {
     public static final String DEFAULT_IMMUTABLE_STORAGE_SCHEME_ATTRIB  = "phoenix.default.immutable.storage.scheme";
     public static final String DEFAULT_MULTITENANT_IMMUTABLE_STORAGE_SCHEME_ATTRIB  = "phoenix.default.multitenant.immutable.storage.scheme";
 
+    public static final String PHOENIX_QUERY_SERVER_LOADBALANCER_ENABLED = "phoenix.queryserver.loadbalancer.enabled";
     public static final String PHOENIX_QUERY_SERVER_CLUSTER_BASE_PATH = "phoenix.queryserver.base.path";
     public static final String PHOENIX_QUERY_SERVER_SERVICE_NAME = "phoenix.queryserver.service.name";
     public static final String PHOENIX_QUERY_SERVER_ZK_ACL_USERNAME = "phoenix.queryserver.zookeeper.acl.username";
@@ -284,6 +293,9 @@ public interface QueryServices extends SQLCloseable {
 
     //Update Cache Frequency default config attribute
     public static final String DEFAULT_UPDATE_CACHE_FREQUENCY_ATRRIB  = "phoenix.default.update.cache.frequency";
+
+    // Whether to enable cost-based-decision in the query optimizer
+    public static final String COST_BASED_OPTIMIZER_ENABLED = "phoenix.costbased.optimizer.enabled";
 
     /**
      * Get executor service used for parallel scans

@@ -42,6 +42,11 @@ public class DelegateMutationPlan implements MutationPlan {
     }
 
     @Override
+    public QueryPlan getQueryPlan() {
+        return plan.getQueryPlan();
+    }
+
+    @Override
     public ParameterMetaData getParameterMetaData() {
         return plan.getParameterMetaData();
     }
@@ -75,6 +80,11 @@ public class DelegateMutationPlan implements MutationPlan {
     @Override
     public Long getEstimatedBytesToScan() throws SQLException {
         return plan.getEstimatedBytesToScan();
+    }
+
+    @Override
+    public Long getEstimateInfoTimestamp() throws SQLException {
+        return plan.getEstimateInfoTimestamp();
     }
 
 }

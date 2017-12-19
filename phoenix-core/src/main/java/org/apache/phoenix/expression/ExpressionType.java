@@ -42,6 +42,7 @@ import org.apache.phoenix.expression.function.CeilTimestampExpression;
 import org.apache.phoenix.expression.function.CeilWeekExpression;
 import org.apache.phoenix.expression.function.CeilYearExpression;
 import org.apache.phoenix.expression.function.CoalesceFunction;
+import org.apache.phoenix.expression.function.CollationKeyFunction;
 import org.apache.phoenix.expression.function.ConvertTimezoneFunction;
 import org.apache.phoenix.expression.function.CountAggregateFunction;
 import org.apache.phoenix.expression.function.DayOfMonthFunction;
@@ -130,6 +131,7 @@ import org.apache.phoenix.expression.function.WeekFunction;
 import org.apache.phoenix.expression.function.YearFunction;
 import org.apache.phoenix.expression.function.DayOfWeekFunction;
 import org.apache.phoenix.expression.function.DayOfYearFunction;
+import org.apache.phoenix.expression.function.DistinctCountHyperLogLogAggregateFunction;
 
 import com.google.common.collect.Maps;
 
@@ -292,7 +294,9 @@ public enum ExpressionType {
     DefaultValueExpression(DefaultValueExpression.class),
     ArrayColumnExpression(SingleCellColumnExpression.class),
     FirstValuesFunction(FirstValuesFunction.class),
-    LastValuesFunction(LastValuesFunction.class);
+    LastValuesFunction(LastValuesFunction.class),
+    DistinctCountHyperLogLogAggregateFunction(DistinctCountHyperLogLogAggregateFunction.class),
+    CollationKeyFunction(CollationKeyFunction.class);
 
     ExpressionType(Class<? extends Expression> clazz) {
         this.clazz = clazz;

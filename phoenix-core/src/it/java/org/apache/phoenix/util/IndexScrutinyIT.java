@@ -1,3 +1,20 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.apache.phoenix.util;
 
 import static org.junit.Assert.assertEquals;
@@ -18,7 +35,7 @@ public class IndexScrutinyIT extends ParallelStatsDisabledIT {
         String fullTableName = SchemaUtil.getTableName(schemaName, tableName);
         String fullIndexName = SchemaUtil.getTableName(schemaName, indexName);
         try (Connection conn = DriverManager.getConnection(getUrl())) {
-            conn.createStatement().execute("CREATE TABLE " + fullTableName + "(k VARCHAR PRIMARY KEY, v VARCHAR) COLUMN_ENCODED_BYTES = 0, STORE_NULLS=true");
+            conn.createStatement().execute("CREATE TABLE " + fullTableName + "(k VARCHAR PRIMARY KEY, v VARCHAR) COLUMN_ENCODED_BYTES = 0, STORE_NULLS=true, SALT_BUCKETS=2");
             conn.createStatement().execute("CREATE INDEX " + indexName + " ON " + fullTableName + " (v)");
             conn.createStatement().execute("UPSERT INTO " + fullTableName + " VALUES('b','bb')");
             conn.createStatement().execute("UPSERT INTO " + fullTableName + " VALUES('a','ccc')");
@@ -44,7 +61,7 @@ public class IndexScrutinyIT extends ParallelStatsDisabledIT {
         String fullIndexName = SchemaUtil.getTableName(schemaName, indexName);
         try (Connection conn = DriverManager.getConnection(getUrl())) {
             conn.createStatement().execute("CREATE TABLE " + fullTableName + "(k VARCHAR PRIMARY KEY, v VARCHAR, v2 VARCHAR) COLUMN_ENCODED_BYTES = 0, STORE_NULLS=true");
-            conn.createStatement().execute("CREATE INDEX " + indexName + " ON " + fullTableName + " (v) INCLUDE (v2)");
+            conn.createStatement().execute("CREATE LOCAL INDEX " + indexName + " ON " + fullTableName + " (v) INCLUDE (v2)");
             conn.createStatement().execute("UPSERT INTO " + fullTableName + " VALUES('b','bb','0')");
             conn.createStatement().execute("UPSERT INTO " + fullTableName + " VALUES('a','ccc','1')");
             conn.commit();

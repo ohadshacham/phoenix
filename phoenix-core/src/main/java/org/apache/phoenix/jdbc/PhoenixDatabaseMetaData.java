@@ -321,6 +321,7 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData {
     public static final int MIN_LOCAL_SI_VERSION_DISALLOW = VersionUtil.encodeVersion("0", "98", "6");
     public static final int MIN_RENEW_LEASE_VERSION = VersionUtil.encodeVersion("1", "1", "3");
     public static final int MIN_NAMESPACE_MAPPED_PHOENIX_VERSION = VersionUtil.encodeVersion("4", "8", "0");
+    public static final int MIN_PENDING_ACTIVE_INDEX = VersionUtil.encodeVersion("4", "12", "0");
     
     // Version below which we should turn off essential column family.
     public static final int ESSENTIAL_FAMILY_VERSION_THRESHOLD = VersionUtil.encodeVersion("0", "94", "7");
@@ -1031,10 +1032,10 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData {
         public Integer getScale() {
             return null;
         }
-		@Override
-		public SortOrder getSortOrder() {
-			return SortOrder.getDefault();
-		}
+        @Override
+        public SortOrder getSortOrder() {
+            return SortOrder.getDefault();
+        }
     };
     private static final RowProjector TABLE_TYPE_ROW_PROJECTOR = new RowProjector(Arrays.<ColumnProjector>asList(
             new ExpressionProjector(TABLE_TYPE, SYSTEM_CATALOG,
@@ -1160,10 +1161,12 @@ public class PhoenixDatabaseMetaData implements DatabaseMetaData {
             StringBuilder whereClause = new StringBuilder();
             addTenantIdFilter(whereClause, catalog);
             if (schemaPattern != null) {
-                whereClause.append(" and " + SEQUENCE_SCHEMA + (schemaPattern.length() == 0 ? " is null" : " like '" + StringUtil.escapeStringConstant(schemaPattern) + "'\n" ));
+                appendConjunction(whereClause);
+                whereClause.append(SEQUENCE_SCHEMA + (schemaPattern.length() == 0 ? " is null" : " like '" + StringUtil.escapeStringConstant(schemaPattern) + "'\n" ));
             }
             if (tableNamePattern != null) {
-                whereClause.append(" and " + SEQUENCE_NAME + " like '" + StringUtil.escapeStringConstant(tableNamePattern) + "'\n" );
+                appendConjunction(whereClause);
+                whereClause.append(SEQUENCE_NAME + " like '" + StringUtil.escapeStringConstant(tableNamePattern) + "'\n" );
             }
             if (whereClause.length() > 0) {
                 buf.append(" where\n");

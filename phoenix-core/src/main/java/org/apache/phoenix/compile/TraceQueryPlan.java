@@ -46,6 +46,7 @@ import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixStatement;
 import org.apache.phoenix.jdbc.PhoenixStatement.Operation;
 import org.apache.phoenix.metrics.MetricInfo;
+import org.apache.phoenix.optimize.Cost;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.LiteralParseNode;
 import org.apache.phoenix.parse.ParseNodeFactory;
@@ -194,6 +195,11 @@ public class TraceQueryPlan implements QueryPlan {
     }
 
     @Override
+    public Cost getCost() {
+        return Cost.ZERO;
+    }
+
+    @Override
     public Set<TableRef> getSourceRefs() {
         return Collections.emptySet();
     }
@@ -270,6 +276,11 @@ public class TraceQueryPlan implements QueryPlan {
 
     @Override
     public Long getEstimatedBytesToScan() {
+        return 0l;
+    }
+
+    @Override
+    public Long getEstimateInfoTimestamp() throws SQLException {
         return 0l;
     }
 }

@@ -607,4 +607,126 @@ public class IndexMetadataIT extends ParallelStatsDisabledIT {
                 "order by table_name" );
         assertFalse(rs.next());
     }
+    
+    @Test
+    public void testImmutableTableOnlyHasPrimaryKeyIndex() throws Exception {
+        helpTestTableOnlyHasPrimaryKeyIndex(false, false);
+    }
+
+    @Test
+    public void testImmutableLocalTableOnlyHasPrimaryKeyIndex() throws Exception {
+        helpTestTableOnlyHasPrimaryKeyIndex(false, true);
+    }
+
+    @Test
+    public void testMutableTableOnlyHasPrimaryKeyIndex() throws Exception {
+        helpTestTableOnlyHasPrimaryKeyIndex(true, false);
+    }
+
+    @Test
+    public void testMutableLocalTableOnlyHasPrimaryKeyIndex() throws Exception {
+        helpTestTableOnlyHasPrimaryKeyIndex(true, true);
+    }
+
+    private void helpTestTableOnlyHasPrimaryKeyIndex(boolean mutable,
+            boolean localIndex) throws Exception {
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        String dataTableName = generateUniqueName();
+        String indexName = generateUniqueName();
+        try {
+            conn.createStatement().execute(
+                "CREATE TABLE " + dataTableName + " ("
+                            + "pk1 VARCHAR not null, "
+                            + "pk2 VARCHAR not null, "
+                            + "CONSTRAINT PK PRIMARY KEY (pk1, pk2))"
+                            + (!mutable ? "IMMUTABLE_ROWS=true" : ""));
+            String query = "SELECT * FROM " + dataTableName;
+            ResultSet rs = conn.createStatement().executeQuery(query);
+            assertFalse(rs.next());
+            conn.createStatement().execute(
+                "CREATE " + (localIndex ? "LOCAL" : "")
+                    + " INDEX " + indexName + " ON " + dataTableName + " (pk2, pk1)");
+            query = "SELECT * FROM " + indexName;
+            rs = conn.createStatement().executeQuery(query);
+            assertFalse(rs.next());
+
+            PreparedStatement stmt = conn.prepareStatement("UPSERT INTO " + dataTableName + " VALUES(?,?)");
+            stmt.setString(1, "k11");
+            stmt.setString(2, "k21");
+            stmt.execute();
+            conn.commit();
+
+            query = "SELECT * FROM " + indexName;
+            rs = conn.createStatement().executeQuery(query);
+            assertTrue(rs.next());
+            assertEquals("k21", rs.getString(1));
+            assertEquals("k11", rs.getString(2));
+            assertFalse(rs.next());
+            
+            query = "SELECT * FROM " + dataTableName + " WHERE pk2='k21'";
+            rs = conn.createStatement().executeQuery(query);
+            assertTrue(rs.next());
+            assertEquals("k11", rs.getString(1));
+            assertEquals("k21", rs.getString(2));
+            assertFalse(rs.next());
+        } finally {
+            conn.close();
+        }
+    }
+
+
+
+    @Test
+    public void testIndexAlterPhoenixProperty() throws Exception {
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        String testTable = generateUniqueName();
+
+
+        String ddl = "create table " + testTable  + " (k varchar primary key, v1 varchar)";
+        Statement stmt = conn.createStatement();
+        stmt.execute(ddl);
+        String indexName = "IDX_" + generateUniqueName();
+
+        ddl = "CREATE INDEX " + indexName + " ON " + testTable  + " (v1) ";
+        stmt.execute(ddl);
+        conn.createStatement().execute("ALTER INDEX "+indexName+" ON " + testTable +" ACTIVE SET GUIDE_POSTS_WIDTH = 10");
+
+        ResultSet rs = conn.createStatement().executeQuery(
+                "select GUIDE_POSTS_WIDTH from SYSTEM.\"CATALOG\" where TABLE_NAME='" + indexName + "'");assertTrue(rs.next());
+        assertEquals(10,rs.getInt(1));
+
+        conn.createStatement().execute("ALTER INDEX "+indexName+" ON " + testTable +" ACTIVE SET GUIDE_POSTS_WIDTH = 20");
+        rs = conn.createStatement().executeQuery(
+                "select GUIDE_POSTS_WIDTH from SYSTEM.\"CATALOG\" where TABLE_NAME='" + indexName + "'");assertTrue(rs.next());
+        assertEquals(20,rs.getInt(1));
+    }
+
+
+    @Test
+    public void testIndexAlterHBaseProperty() throws Exception {
+        Properties props = PropertiesUtil.deepCopy(TEST_PROPERTIES);
+        Connection conn = DriverManager.getConnection(getUrl(), props);
+        String testTable = generateUniqueName();
+
+        String ddl = "create table " + testTable  + " (k varchar primary key, v1 varchar)";
+        Statement stmt = conn.createStatement();
+        stmt.execute(ddl);
+        String indexName = "IDX_" + generateUniqueName();
+
+        ddl = "CREATE INDEX " + indexName + " ON " + testTable  + " (v1) ";
+        stmt.execute(ddl);
+
+        conn.createStatement().execute("ALTER INDEX "+indexName+" ON " + testTable +" ACTIVE SET DISABLE_WAL=false");
+        asssertIsWALDisabled(conn,indexName,false);
+        conn.createStatement().execute("ALTER INDEX "+indexName+" ON " + testTable +" ACTIVE SET DISABLE_WAL=true");
+        asssertIsWALDisabled(conn,indexName,true);
+    }
+
+    private static void asssertIsWALDisabled(Connection conn, String fullTableName, boolean expectedValue) throws SQLException {
+        PhoenixConnection pconn = conn.unwrap(PhoenixConnection.class);
+        assertEquals(expectedValue, pconn.getTable(new PTableKey(pconn.getTenantId(), fullTableName)).isWALDisabled());
+    }
+
 }

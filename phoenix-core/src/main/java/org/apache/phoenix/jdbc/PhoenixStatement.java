@@ -44,6 +44,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.KeyValue;
 import org.apache.hadoop.hbase.client.Consistency;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.util.Pair;
@@ -90,12 +91,14 @@ import org.apache.phoenix.expression.RowKeyColumnExpression;
 import org.apache.phoenix.iterate.MaterializedResultIterator;
 import org.apache.phoenix.iterate.ParallelScanGrouper;
 import org.apache.phoenix.iterate.ResultIterator;
+import org.apache.phoenix.optimize.Cost;
 import org.apache.phoenix.parse.AddColumnStatement;
 import org.apache.phoenix.parse.AddJarsStatement;
 import org.apache.phoenix.parse.AliasedNode;
 import org.apache.phoenix.parse.AlterIndexStatement;
 import org.apache.phoenix.parse.AlterSessionStatement;
 import org.apache.phoenix.parse.BindableStatement;
+import org.apache.phoenix.parse.ChangePermsStatement;
 import org.apache.phoenix.parse.CloseStatement;
 import org.apache.phoenix.parse.ColumnDef;
 import org.apache.phoenix.parse.ColumnName;
@@ -211,8 +214,9 @@ public class PhoenixStatement implements Statement, SQLCloseable {
         QUERY("queried", false),
         DELETE("deleted", true),
         UPSERT("upserted", true),
-        UPGRADE("upgrade", true);
-        
+        UPGRADE("upgrade", true),
+        ADMIN("admin", true);
+
         private final String toString;
         private final boolean isMutation;
         Operation(String toString, boolean isMutation) {
@@ -508,24 +512,32 @@ public class PhoenixStatement implements Statement, SQLCloseable {
     private static final String EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN_NAME = "BytesEstimate";
     private static final byte[] EXPLAIN_PLAN_BYTES_ESTIMATE =
             PVarchar.INSTANCE.toBytes(EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN_NAME);
-    private static final String EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN_NAME = "RowsEstimate";
-    private static final byte[] EXPLAIN_PLAN_ROWS_ESTIMATE =
-            PVarchar.INSTANCE.toBytes(EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN_NAME);
-
     public static final String EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN_ALIAS = "EST_BYTES_READ";
-    public static final String EXPLAIN_PLAN_ROWS_COLUMN_ALIAS = "EST_ROWS_READ";
-
     private static final PColumnImpl EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN =
             new PColumnImpl(PNameFactory.newName(EXPLAIN_PLAN_BYTES_ESTIMATE),
                     PNameFactory.newName(EXPLAIN_PLAN_FAMILY), PLong.INSTANCE, null, null, false, 1,
                     SortOrder.getDefault(), 0, null, false, null, false, false,
                     EXPLAIN_PLAN_BYTES_ESTIMATE);
 
+    private static final String EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN_NAME = "RowsEstimate";
+    private static final byte[] EXPLAIN_PLAN_ROWS_ESTIMATE =
+            PVarchar.INSTANCE.toBytes(EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN_NAME);
+    public static final String EXPLAIN_PLAN_ROWS_COLUMN_ALIAS = "EST_ROWS_READ";
     private static final PColumnImpl EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN =
             new PColumnImpl(PNameFactory.newName(EXPLAIN_PLAN_ROWS_ESTIMATE),
                     PNameFactory.newName(EXPLAIN_PLAN_FAMILY), PLong.INSTANCE, null, null, false, 2,
                     SortOrder.getDefault(), 0, null, false, null, false, false,
                     EXPLAIN_PLAN_ROWS_ESTIMATE);
+
+    private static final String EXPLAIN_PLAN_ESTIMATE_INFO_TS_COLUMN_NAME = "EstimateInfoTS";
+    private static final byte[] EXPLAIN_PLAN_ESTIMATE_INFO_TS =
+            PVarchar.INSTANCE.toBytes(EXPLAIN_PLAN_ESTIMATE_INFO_TS_COLUMN_NAME);
+    public static final String EXPLAIN_PLAN_ESTIMATE_INFO_TS_COLUMN_ALIAS = "EST_INFO_TS";
+    private static final PColumnImpl EXPLAIN_PLAN_ESTIMATE_INFO_TS_COLUMN =
+            new PColumnImpl(PNameFactory.newName(EXPLAIN_PLAN_ESTIMATE_INFO_TS),
+                PNameFactory.newName(EXPLAIN_PLAN_FAMILY), PLong.INSTANCE, null, null, false, 3,
+                SortOrder.getDefault(), 0, null, false, null, false, false,
+                EXPLAIN_PLAN_ESTIMATE_INFO_TS);
 
     private static final RowProjector EXPLAIN_PLAN_ROW_PROJECTOR_WITH_BYTE_ROW_ESTIMATES =
             new RowProjector(Arrays
@@ -535,12 +547,17 @@ public class PhoenixStatement implements Statement, SQLCloseable {
                                         new RowKeyValueAccessor(Collections
                                                 .<PDatum> singletonList(EXPLAIN_PLAN_DATUM), 0)),
                                 false),
-                        new ExpressionProjector(
-                                EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN_ALIAS, EXPLAIN_PLAN_TABLE_NAME,
-                                new KeyValueColumnExpression(EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN), false),
-                        new ExpressionProjector(EXPLAIN_PLAN_ROWS_COLUMN_ALIAS,
+                        new ExpressionProjector(EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN_ALIAS,
                                 EXPLAIN_PLAN_TABLE_NAME, new KeyValueColumnExpression(
-                                        EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN),
+                                        EXPLAIN_PLAN_BYTES_ESTIMATE_COLUMN),
+                                false),
+                        new ExpressionProjector(EXPLAIN_PLAN_ROWS_COLUMN_ALIAS,
+                                EXPLAIN_PLAN_TABLE_NAME,
+                                new KeyValueColumnExpression(EXPLAIN_PLAN_ROWS_ESTIMATE_COLUMN),
+                                false),
+                        new ExpressionProjector(EXPLAIN_PLAN_ESTIMATE_INFO_TS_COLUMN_ALIAS,
+                                EXPLAIN_PLAN_TABLE_NAME,
+                                new KeyValueColumnExpression(EXPLAIN_PLAN_ESTIMATE_INFO_TS_COLUMN),
                                 false)),
                     0, true);
 
@@ -569,6 +586,7 @@ public class PhoenixStatement implements Statement, SQLCloseable {
             List<Tuple> tuples = Lists.newArrayListWithExpectedSize(planSteps.size());
             Long estimatedBytesToScan = plan.getEstimatedBytesToScan();
             Long estimatedRowsToScan = plan.getEstimatedRowsToScan();
+            Long estimateInfoTimestamp = plan.getEstimateInfoTimestamp();
             for (String planStep : planSteps) {
                 byte[] row = PVarchar.INSTANCE.toBytes(planStep);
                 List<Cell> cells = Lists.newArrayListWithCapacity(3);
@@ -584,11 +602,18 @@ public class PhoenixStatement implements Statement, SQLCloseable {
                         MetaDataProtocol.MIN_TABLE_TIMESTAMP,
                         PLong.INSTANCE.toBytes(estimatedRowsToScan)));
                 }
+                if (estimateInfoTimestamp != null) {
+                    cells.add(KeyValueUtil.newKeyValue(row, EXPLAIN_PLAN_FAMILY, EXPLAIN_PLAN_ESTIMATE_INFO_TS,
+                        MetaDataProtocol.MIN_TABLE_TIMESTAMP,
+                        PLong.INSTANCE.toBytes(estimateInfoTimestamp)));
+                }
+                Collections.sort(cells, KeyValue.COMPARATOR);
                 Tuple tuple = new MultiKeyValueTuple(cells);
                 tuples.add(tuple);
             }
             final Long estimatedBytes = estimatedBytesToScan;
             final Long estimatedRows = estimatedRowsToScan;
+            final Long estimateTs = estimateInfoTimestamp;
             final ResultIterator iterator = new MaterializedResultIterator(tuples);
             return new QueryPlan() {
 
@@ -620,6 +645,11 @@ public class PhoenixStatement implements Statement, SQLCloseable {
                 @Override
                 public long getEstimatedSize() {
                     return 0;
+                }
+
+                @Override
+                public Cost getCost() {
+                    return Cost.ZERO;
                 }
 
                 @Override
@@ -706,6 +736,10 @@ public class PhoenixStatement implements Statement, SQLCloseable {
                     return estimatedBytes;
                 }
                 
+                @Override
+                public Long getEstimateInfoTimestamp() throws SQLException {
+                    return estimateTs;
+                }
             };
         }
     }
@@ -1127,6 +1161,33 @@ public class PhoenixStatement implements Statement, SQLCloseable {
         }
     }
 
+    private static class ExecutableChangePermsStatement extends ChangePermsStatement implements CompilableStatement {
+
+        public ExecutableChangePermsStatement (String permsString, boolean isSchemaName, TableName tableName,
+                                               String schemaName, boolean isGroupName, LiteralParseNode userOrGroup, boolean isGrantStatement) {
+            super(permsString, isSchemaName, tableName, schemaName, isGroupName, userOrGroup, isGrantStatement);
+        }
+
+        @Override
+        public MutationPlan compilePlan(PhoenixStatement stmt, Sequence.ValueOp seqAction) throws SQLException {
+            final StatementContext context = new StatementContext(stmt);
+
+            return new BaseMutationPlan(context, this.getOperation()) {
+
+                @Override
+                public ExplainPlan getExplainPlan() throws SQLException {
+                    return new ExplainPlan(Collections.singletonList("GRANT PERMISSION"));
+                }
+
+                @Override
+                public MutationState execute() throws SQLException {
+                    MetaDataClient client = new MetaDataClient(getContext().getConnection());
+                    return client.changePermissions(ExecutableChangePermsStatement.this);
+                }
+            };
+        }
+    }
+
     private static class ExecutableDropIndexStatement extends DropIndexStatement implements CompilableStatement {
 
         public ExecutableDropIndexStatement(NamedNode indexName, TableName tableName, boolean ifExists) {
@@ -1155,8 +1216,8 @@ public class PhoenixStatement implements Statement, SQLCloseable {
 
     private static class ExecutableAlterIndexStatement extends AlterIndexStatement implements CompilableStatement {
 
-        public ExecutableAlterIndexStatement(NamedTableNode indexTableNode, String dataTableName, boolean ifExists, PIndexState state, boolean async) {
-            super(indexTableNode, dataTableName, ifExists, state, async);
+        public ExecutableAlterIndexStatement(NamedTableNode indexTableNode, String dataTableName, boolean ifExists, PIndexState state, boolean async, ListMultimap<String,Pair<String,Object>> props) {
+            super(indexTableNode, dataTableName, ifExists, state, async, props);
         }
 
         @SuppressWarnings("unchecked")
@@ -1287,11 +1348,12 @@ public class PhoenixStatement implements Statement, SQLCloseable {
                 public ExplainPlan getExplainPlan() throws SQLException {
                     return new ExplainPlan(Collections.singletonList("EXECUTE UPGRADE"));
                 }
-                
+
                 @Override
-                public StatementContext getContext() {
-                    return new StatementContext(stmt);
-                }
+                public QueryPlan getQueryPlan() { return null; }
+
+                @Override
+                public StatementContext getContext() { return new StatementContext(stmt); }
                 
                 @Override
                 public TableRef getTargetRef() {
@@ -1313,6 +1375,11 @@ public class PhoenixStatement implements Statement, SQLCloseable {
 
                 @Override
                 public Long getEstimatedBytesToScan() throws SQLException {
+                    return 0l;
+                }
+
+                @Override
+                public Long getEstimateInfoTimestamp() throws SQLException {
                     return 0l;
                 }
             };
@@ -1496,10 +1563,10 @@ public class PhoenixStatement implements Statement, SQLCloseable {
         public DropIndexStatement dropIndex(NamedNode indexName, TableName tableName, boolean ifExists) {
             return new ExecutableDropIndexStatement(indexName, tableName, ifExists);
         }
-        
+
         @Override
-        public AlterIndexStatement alterIndex(NamedTableNode indexTableNode, String dataTableName, boolean ifExists, PIndexState state, boolean async) {
-            return new ExecutableAlterIndexStatement(indexTableNode, dataTableName, ifExists, state, async);
+        public AlterIndexStatement alterIndex(NamedTableNode indexTableNode, String dataTableName, boolean ifExists, PIndexState state, boolean async, ListMultimap<String,Pair<String,Object>> props) {
+            return new ExecutableAlterIndexStatement(indexTableNode, dataTableName, ifExists, state, async, props);
         }
 
         @Override
@@ -1526,6 +1593,13 @@ public class PhoenixStatement implements Statement, SQLCloseable {
         public ExecuteUpgradeStatement executeUpgrade() {
             return new ExecutableExecuteUpgradeStatement();
         }
+
+        @Override
+        public ExecutableChangePermsStatement changePermsStatement(String permsString, boolean isSchemaName, TableName tableName,
+                                                         String schemaName, boolean isGroupName, LiteralParseNode userOrGroup, boolean isGrantStatement) {
+            return new ExecutableChangePermsStatement(permsString, isSchemaName, tableName, schemaName, isGroupName, userOrGroup,isGrantStatement);
+        }
+
     }
     
     static class PhoenixStatementParser extends SQLParser {

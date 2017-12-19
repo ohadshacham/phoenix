@@ -20,10 +20,12 @@ package org.apache.phoenix.execute;
 import static org.apache.phoenix.monitoring.TaskExecutionMetricsHolder.NO_OP_INSTANCE;
 import static org.apache.phoenix.util.LogUtil.addCustomAnnotations;
 import static org.apache.phoenix.util.NumberUtil.add;
+import static org.apache.phoenix.util.NumberUtil.getMin;
 
 import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -51,6 +53,7 @@ import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.InListExpression;
 import org.apache.phoenix.expression.LiteralExpression;
 import org.apache.phoenix.expression.RowValueConstructorExpression;
+import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.iterate.FilterResultIterator;
 import org.apache.phoenix.iterate.ParallelScanGrouper;
 import org.apache.phoenix.iterate.ResultIterator;
@@ -59,6 +62,7 @@ import org.apache.phoenix.job.JobManager.JobCallable;
 import org.apache.phoenix.join.HashCacheClient;
 import org.apache.phoenix.join.HashJoinInfo;
 import org.apache.phoenix.monitoring.TaskExecutionMetricsHolder;
+import org.apache.phoenix.optimize.Cost;
 import org.apache.phoenix.parse.FilterableStatement;
 import org.apache.phoenix.parse.ParseNode;
 import org.apache.phoenix.parse.SQLParser;
@@ -73,10 +77,10 @@ import org.apache.phoenix.schema.types.PArrayDataType;
 import org.apache.phoenix.schema.types.PBoolean;
 import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.types.PVarbinary;
-import org.apache.phoenix.util.SQLCloseable;
 import org.apache.phoenix.util.SQLCloseables;
 
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 
 public class HashJoinPlan extends DelegateQueryPlan {
@@ -88,18 +92,19 @@ public class HashJoinPlan extends DelegateQueryPlan {
     private final boolean recompileWhereClause;
     private final Set<TableRef> tableRefs;
     private final int maxServerCacheTimeToLive;
-    private final List<SQLCloseable> dependencies = Lists.newArrayList();
+    private final Map<ImmutableBytesPtr,ServerCache> dependencies = Maps.newHashMap();
     private HashCacheClient hashClient;
     private AtomicLong firstJobEndTime;
     private List<Expression> keyRangeExpressions;
     private Long estimatedRows;
     private Long estimatedBytes;
+    private Long estimateInfoTs;
     private boolean explainPlanCalled;
     
     public static HashJoinPlan create(SelectStatement statement, 
             QueryPlan plan, HashJoinInfo joinInfo, SubPlan[] subPlans) throws SQLException {
         if (!(plan instanceof HashJoinPlan))
-            return new HashJoinPlan(statement, plan, joinInfo, subPlans, joinInfo == null, Collections.<SQLCloseable>emptyList());
+            return new HashJoinPlan(statement, plan, joinInfo, subPlans, joinInfo == null, Collections.<ImmutableBytesPtr,ServerCache>emptyMap());
         
         HashJoinPlan hashJoinPlan = (HashJoinPlan) plan;
         assert (hashJoinPlan.joinInfo == null && hashJoinPlan.delegate instanceof BaseQueryPlan);
@@ -115,9 +120,9 @@ public class HashJoinPlan extends DelegateQueryPlan {
     }
     
     private HashJoinPlan(SelectStatement statement, 
-            QueryPlan plan, HashJoinInfo joinInfo, SubPlan[] subPlans, boolean recompileWhereClause, List<SQLCloseable> dependencies) throws SQLException {
+            QueryPlan plan, HashJoinInfo joinInfo, SubPlan[] subPlans, boolean recompileWhereClause, Map<ImmutableBytesPtr,ServerCache> dependencies) throws SQLException {
         super(plan);
-        this.dependencies.addAll(dependencies);
+        this.dependencies.putAll(dependencies);
         this.statement = statement;
         this.joinInfo = joinInfo;
         this.subPlans = subPlans;
@@ -182,7 +187,7 @@ public class HashJoinPlan extends DelegateQueryPlan {
             try {
                 ServerCache result = futures.get(i).get();
                 if (result != null) {
-                    dependencies.add(result);
+                    dependencies.put(new ImmutableBytesPtr(result.getId()),result);
                 }
                 subPlans[i].postProcess(result, this);
             } catch (InterruptedException e) {
@@ -198,7 +203,7 @@ public class HashJoinPlan extends DelegateQueryPlan {
             }
         }
         if (firstException != null) {
-            SQLCloseables.closeAllQuietly(dependencies);
+            SQLCloseables.closeAllQuietly(dependencies.values());
             throw firstException;
         }
         
@@ -259,8 +264,24 @@ public class HashJoinPlan extends DelegateQueryPlan {
             planSteps.add("    JOIN-SCANNER " + joinInfo.getLimit() + " ROW LIMIT");
         }
         for (SubPlan subPlan : subPlans) {
-            estimatedBytes = add(estimatedBytes, subPlan.getInnerPlan().getEstimatedBytesToScan());
-            estimatedRows = add(estimatedRows, subPlan.getInnerPlan().getEstimatedRowsToScan());
+            if (subPlan.getInnerPlan().getEstimatedBytesToScan() == null
+                    || subPlan.getInnerPlan().getEstimatedRowsToScan() == null
+                    || subPlan.getInnerPlan().getEstimateInfoTimestamp() == null) {
+                /*
+                 * If any of the sub plans doesn't have the estimate info available, then we don't
+                 * provide estimate for the overall plan
+                 */
+                estimatedBytes = null;
+                estimatedRows = null;
+                estimateInfoTs = null;
+                break;
+            } else {
+                estimatedBytes =
+                        add(estimatedBytes, subPlan.getInnerPlan().getEstimatedBytesToScan());
+                estimatedRows = add(estimatedRows, subPlan.getInnerPlan().getEstimatedRowsToScan());
+                estimateInfoTs =
+                        getMin(estimateInfoTs, subPlan.getInnerPlan().getEstimateInfoTimestamp());
+            }
         }
         return new ExplainPlan(planSteps);
     }
@@ -268,6 +289,34 @@ public class HashJoinPlan extends DelegateQueryPlan {
     @Override
     public FilterableStatement getStatement() {
         return statement;
+    }
+
+    @Override
+    public Cost getCost() {
+        Long byteCount = null;
+        try {
+            byteCount = getEstimatedBytesToScan();
+        } catch (SQLException e) {
+            // ignored.
+        }
+
+        if (byteCount == null) {
+            return Cost.UNKNOWN;
+        }
+
+        Cost cost = new Cost(0, 0, byteCount);
+        Cost lhsCost = delegate.getCost();
+        if (keyRangeExpressions != null) {
+            // The selectivity of the dynamic rowkey filter.
+            // TODO replace the constant with an estimate value.
+            double selectivity = 0.01;
+            lhsCost = lhsCost.multiplyBy(selectivity);
+        }
+        Cost rhsCost = Cost.ZERO;
+        for (SubPlan subPlan : subPlans) {
+            rhsCost = rhsCost.plus(subPlan.getInnerPlan().getCost());
+        }
+        return cost.plus(lhsCost).plus(rhsCost);
     }
 
     protected interface SubPlan {
@@ -483,6 +532,14 @@ public class HashJoinPlan extends DelegateQueryPlan {
             getExplainPlan();
         }
         return estimatedBytes;
+    }
+
+    @Override
+    public Long getEstimateInfoTimestamp() throws SQLException {
+        if (!explainPlanCalled) {
+            getExplainPlan();
+        }
+        return estimateInfoTs;
     }
 }
 

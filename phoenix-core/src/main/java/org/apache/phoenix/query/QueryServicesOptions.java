@@ -25,6 +25,7 @@ import static org.apache.phoenix.query.QueryServices.CALL_QUEUE_PRODUCER_ATTRIB_
 import static org.apache.phoenix.query.QueryServices.CALL_QUEUE_ROUND_ROBIN_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.COLLECT_REQUEST_LEVEL_METRICS;
 import static org.apache.phoenix.query.QueryServices.COMMIT_STATS_ASYNC;
+import static org.apache.phoenix.query.QueryServices.COST_BASED_OPTIMIZER_ENABLED;
 import static org.apache.phoenix.query.QueryServices.DATE_FORMAT_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.DATE_FORMAT_TIMEZONE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.DELAY_FOR_SCHEMA_UPDATE_CHECK;
@@ -41,6 +42,7 @@ import static org.apache.phoenix.query.QueryServices.HBASE_CLIENT_SCANNER_TIMEOU
 import static org.apache.phoenix.query.QueryServices.IMMUTABLE_ROWS_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.INDEX_MUTATE_BATCH_SIZE_THRESHOLD_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.INDEX_POPULATION_SLEEP_TIME;
+import static org.apache.phoenix.query.QueryServices.INDEX_REBUILD_TASK_INITIAL_DELAY;
 import static org.apache.phoenix.query.QueryServices.IS_NAMESPACE_MAPPING_ENABLED;
 import static org.apache.phoenix.query.QueryServices.IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE;
 import static org.apache.phoenix.query.QueryServices.KEEP_ALIVE_MS_ATTRIB;
@@ -48,7 +50,6 @@ import static org.apache.phoenix.query.QueryServices.LOCAL_INDEX_CLIENT_UPGRADE_
 import static org.apache.phoenix.query.QueryServices.MASTER_INFO_PORT_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_CLIENT_METADATA_CACHE_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_MEMORY_PERC_ATTRIB;
-import static org.apache.phoenix.query.QueryServices.MAX_MEMORY_WAIT_MS_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_MUTATION_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_SERVER_CACHE_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MAX_SERVER_CACHE_TIME_TO_LIVE_MS_ATTRIB;
@@ -58,6 +59,12 @@ import static org.apache.phoenix.query.QueryServices.MAX_TENANT_MEMORY_PERC_ATTR
 import static org.apache.phoenix.query.QueryServices.MIN_STATS_UPDATE_FREQ_MS_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.MUTATE_BATCH_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.NUM_RETRIES_FOR_SCHEMA_UPDATE_CHECK;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_ACLS_ENABLED;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_CLUSTER_BASE_PATH;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_LOADBALANCER_ENABLED;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_SERVICE_NAME;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_ZK_ACL_PASSWORD;
+import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_ZK_ACL_USERNAME;
 import static org.apache.phoenix.query.QueryServices.QUEUE_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.REGIONSERVER_INFO_PORT_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.RENEW_LEASE_ENABLED;
@@ -80,10 +87,6 @@ import static org.apache.phoenix.query.QueryServices.STATS_USE_CURRENT_TIME_ATTR
 import static org.apache.phoenix.query.QueryServices.THREAD_POOL_SIZE_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.THREAD_TIMEOUT_MS_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.TRACING_BATCH_SIZE;
-import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_SERVICE_NAME;
-import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_CLUSTER_BASE_PATH;
-import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_ZK_ACL_PASSWORD;
-import static org.apache.phoenix.query.QueryServices.PHOENIX_QUERY_SERVER_ZK_ACL_USERNAME;
 import static org.apache.phoenix.query.QueryServices.TRACING_ENABLED;
 import static org.apache.phoenix.query.QueryServices.TRACING_STATS_TABLE_NAME_ATTRIB;
 import static org.apache.phoenix.query.QueryServices.TRACING_THREAD_POOL_SIZE;
@@ -127,7 +130,6 @@ public class QueryServicesOptions {
 	public static final int DEFAULT_SPOOL_THRESHOLD_BYTES = 1024 * 1024 * 20; // 20m
     public static final String DEFAULT_SPOOL_DIRECTORY = System.getProperty("java.io.tmpdir");
 	public static final int DEFAULT_MAX_MEMORY_PERC = 15; // 15% of heap
-	public static final int DEFAULT_MAX_MEMORY_WAIT_MS = 10000;
 	public static final int DEFAULT_MAX_TENANT_MEMORY_PERC = 100;
 	public static final long DEFAULT_MAX_SERVER_CACHE_SIZE = 1024*1024*100;  // 100 Mb
     public static final int DEFAULT_TARGET_QUERY_CONCURRENCY = 32;
@@ -145,6 +147,7 @@ public class QueryServicesOptions {
     public static final int DEFAULT_TRACING_THREAD_POOL_SIZE = 5;
     public static final int DEFAULT_TRACING_BATCH_SIZE = 100;
     public static final int DEFAULT_TRACING_TRACE_BUFFER_SIZE = 1000;
+    public static final int DEFAULT_MAX_INDEXES_PER_TABLE = 10;
 
     public final static int DEFAULT_MUTATE_BATCH_SIZE = 100; // Batch size for UPSERT SELECT and DELETE
     //Batch size in bytes for UPSERT, SELECT and DELETE. By default, 2MB
@@ -186,6 +189,7 @@ public class QueryServicesOptions {
     public static final boolean DEFAULT_INDEX_FAILURE_DISABLE_INDEX = true;
     public static final boolean DEFAULT_INDEX_FAILURE_THROW_EXCEPTION = true;
     public static final long DEFAULT_INDEX_FAILURE_HANDLING_REBUILD_INTERVAL = 60000; // 60 secs
+    public static final long DEFAULT_INDEX_REBUILD_TASK_INITIAL_DELAY = 10000; // 10 secs
     public static final long DEFAULT_INDEX_FAILURE_HANDLING_REBUILD_OVERLAP_BACKWARD_TIME = 1; // 1 ms
     public static final long DEFAULT_INDEX_FAILURE_HANDLING_REBUILD_OVERLAP_FORWARD_TIME = 60000 * 3; // 3 mins
     // 30 min rpc timeout * 5 tries, with 2100ms total pause time between retries
@@ -204,6 +208,11 @@ public class QueryServicesOptions {
     public static final boolean DEFAULT_ALLOW_LOCAL_INDEX = true;
     public static final int DEFAULT_INDEX_HANDLER_COUNT = 30;
     public static final int DEFAULT_METADATA_HANDLER_COUNT = 30;
+
+    // Retries when doing server side writes to SYSTEM.CATALOG
+    // 20 retries with 100 pause = 230 seconds total retry time
+    public static final int DEFAULT_METADATA_WRITE_RETRIES_NUMBER = 20;
+    public static final int DEFAULT_METADATA_WRITE_RETRY_PAUSE = 100;
 
     public static final int DEFAULT_TRACING_PAGE_SIZE = 100;
     /**
@@ -299,6 +308,7 @@ public class QueryServicesOptions {
     public static final int DEFAULT_COLUMN_ENCODED_BYTES = QualifierEncodingScheme.TWO_BYTE_QUALIFIERS.getSerializedMetadataValue();
     public static final String DEFAULT_IMMUTABLE_STORAGE_SCHEME = ImmutableStorageScheme.SINGLE_CELL_ARRAY_WITH_OFFSETS.toString();
     public static final String DEFAULT_MULTITENANT_IMMUTABLE_STORAGE_SCHEME = ImmutableStorageScheme.ONE_CELL_PER_COLUMN.toString();
+    public static final boolean DEFAULT_PHOENIX_QUERY_SERVER_LOADBALANCER_ENABLED = false;
     public static final String DEFAULT_PHOENIX_QUERY_SERVER_CLUSTER_BASE_PATH = "/phoenix";
     public static final String DEFAULT_PHOENIX_QUERY_SERVER_SERVICE_NAME = "queryserver";
     public static final String DEFAULT_PHOENIX_QUERY_SERVER_ZK_ACL_USERNAME = "phoenix";
@@ -308,6 +318,9 @@ public class QueryServicesOptions {
     public static final int DEFAULT_CLIENT_CONNECTION_MAX_ALLOWED_CONNECTIONS = 0;
     public static final boolean DEFAULT_STATS_COLLECTION_ENABLED = true;
     public static final boolean DEFAULT_USE_STATS_FOR_PARALLELIZATION = true;
+    
+    //Security defaults
+    public static final boolean DEFAULT_PHOENIX_ACLS_ENABLED = false;
 
     //default update cache frequency
     public static final int DEFAULT_UPDATE_CACHE_FREQUENCY = 0;
@@ -326,8 +339,10 @@ public class QueryServicesOptions {
                                                                                     // 4.10, psql and CSVBulkLoad
                                                                                     // expects binary data to be base 64
                                                                                     // encoded
-    // RS -> RS calls for upsert select statements are enabled by default
-    public static final boolean DEFAULT_ENABLE_SERVER_UPSERT_SELECT = true;
+    // RS -> RS calls for upsert select statements are disabled by default
+    public static final boolean DEFAULT_ENABLE_SERVER_UPSERT_SELECT = false;
+
+    public static final boolean DEFAULT_COST_BASED_OPTIMIZER_ENABLED = false;
 
     private final Configuration config;
 
@@ -359,7 +374,6 @@ public class QueryServicesOptions {
             .setIfUnset(SPOOL_THRESHOLD_BYTES_ATTRIB, DEFAULT_SPOOL_THRESHOLD_BYTES)
             .setIfUnset(SPOOL_DIRECTORY, DEFAULT_SPOOL_DIRECTORY)
             .setIfUnset(MAX_MEMORY_PERC_ATTRIB, DEFAULT_MAX_MEMORY_PERC)
-            .setIfUnset(MAX_MEMORY_WAIT_MS_ATTRIB, DEFAULT_MAX_MEMORY_WAIT_MS)
             .setIfUnset(MAX_TENANT_MEMORY_PERC_ATTRIB, DEFAULT_MAX_TENANT_MEMORY_PERC)
             .setIfUnset(MAX_SERVER_CACHE_SIZE_ATTRIB, DEFAULT_MAX_SERVER_CACHE_SIZE)
             .setIfUnset(SCAN_CACHE_SIZE_ATTRIB, DEFAULT_SCAN_CACHE_SIZE)
@@ -396,6 +410,7 @@ public class QueryServicesOptions {
             .setIfUnset(IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE, DEFAULT_IS_SYSTEM_TABLE_MAPPED_TO_NAMESPACE)
             .setIfUnset(LOCAL_INDEX_CLIENT_UPGRADE_ATTRIB, DEFAULT_LOCAL_INDEX_CLIENT_UPGRADE)
             .setIfUnset(AUTO_UPGRADE_ENABLED, DEFAULT_AUTO_UPGRADE_ENABLED)
+            .setIfUnset(PHOENIX_QUERY_SERVER_LOADBALANCER_ENABLED, DEFAULT_PHOENIX_QUERY_SERVER_LOADBALANCER_ENABLED)
             .setIfUnset(PHOENIX_QUERY_SERVER_CLUSTER_BASE_PATH, DEFAULT_PHOENIX_QUERY_SERVER_CLUSTER_BASE_PATH)
             .setIfUnset(PHOENIX_QUERY_SERVER_SERVICE_NAME, DEFAULT_PHOENIX_QUERY_SERVER_SERVICE_NAME)
             .setIfUnset(PHOENIX_QUERY_SERVER_ZK_ACL_USERNAME, DEFAULT_PHOENIX_QUERY_SERVER_ZK_ACL_USERNAME)
@@ -405,7 +420,10 @@ public class QueryServicesOptions {
             .setIfUnset(TRACING_BATCH_SIZE, DEFAULT_TRACING_BATCH_SIZE)
             .setIfUnset(TRACING_THREAD_POOL_SIZE, DEFAULT_TRACING_THREAD_POOL_SIZE)
             .setIfUnset(STATS_COLLECTION_ENABLED, DEFAULT_STATS_COLLECTION_ENABLED)
-            .setIfUnset(USE_STATS_FOR_PARALLELIZATION, DEFAULT_USE_STATS_FOR_PARALLELIZATION);
+            .setIfUnset(USE_STATS_FOR_PARALLELIZATION, DEFAULT_USE_STATS_FOR_PARALLELIZATION)
+            .setIfUnset(COST_BASED_OPTIMIZER_ENABLED, DEFAULT_COST_BASED_OPTIMIZER_ENABLED)
+            .setIfUnset(UPLOAD_BINARY_DATA_TYPE_ENCODING, DEFAULT_UPLOAD_BINARY_DATA_TYPE_ENCODING)
+            .setIfUnset(PHOENIX_ACLS_ENABLED,  DEFAULT_PHOENIX_ACLS_ENABLED);
         // HBase sets this to 1, so we reset it to something more appropriate.
         // Hopefully HBase will change this, because we can't know if a user set
         // it to 1, so we'll change it.
@@ -469,10 +487,6 @@ public class QueryServicesOptions {
 
     public QueryServicesOptions setMaxMemoryPerc(int maxMemoryPerc) {
         return set(MAX_MEMORY_PERC_ATTRIB, maxMemoryPerc);
-    }
-
-    public QueryServicesOptions setMaxMemoryWaitMs(int maxMemoryWaitMs) {
-        return set(MAX_MEMORY_WAIT_MS_ATTRIB, maxMemoryWaitMs);
     }
 
     public QueryServicesOptions setMaxTenantMemoryPerc(int maxTenantMemoryPerc) {
@@ -562,10 +576,6 @@ public class QueryServicesOptions {
 
     public int getMaxMemoryPerc() {
         return config.getInt(MAX_MEMORY_PERC_ATTRIB, DEFAULT_MAX_MEMORY_PERC);
-    }
-
-    public int getMaxMemoryWaitMs() {
-        return config.getInt(MAX_MEMORY_WAIT_MS_ATTRIB, DEFAULT_MAX_MEMORY_WAIT_MS);
     }
 
     public int getMaxMutateSize() {
@@ -784,4 +794,14 @@ public class QueryServicesOptions {
         return this;
     }
 
+    public QueryServicesOptions setIndexRebuildTaskInitialDelay(long waitTime) {
+        config.setLong(INDEX_REBUILD_TASK_INITIAL_DELAY, waitTime);
+        return this;
+    }
+
+
+    public QueryServicesOptions setSequenceCacheSize(long sequenceCacheSize) {
+        config.setLong(SEQUENCE_CACHE_SIZE_ATTRIB, sequenceCacheSize);
+        return this;
+    }
 }

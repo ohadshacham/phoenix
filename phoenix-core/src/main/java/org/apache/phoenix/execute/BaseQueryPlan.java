@@ -24,6 +24,7 @@ import java.sql.ParameterMetaData;
 import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.logging.Log;
@@ -35,6 +36,7 @@ import org.apache.hadoop.hbase.io.TimeRange;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.htrace.TraceScope;
+import org.apache.phoenix.cache.ServerCacheClient.ServerCache;
 import org.apache.phoenix.compile.ExplainPlan;
 import org.apache.phoenix.compile.FromCompiler;
 import org.apache.phoenix.compile.GroupByCompiler.GroupBy;
@@ -47,6 +49,7 @@ import org.apache.phoenix.compile.WhereCompiler;
 import org.apache.phoenix.coprocessor.BaseScannerRegionObserver;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.ProjectedColumnExpression;
+import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.iterate.DefaultParallelScanGrouper;
 import org.apache.phoenix.iterate.DelegateResultIterator;
@@ -60,6 +63,8 @@ import org.apache.phoenix.parse.HintNode.Hint;
 import org.apache.phoenix.parse.ParseNodeFactory;
 import org.apache.phoenix.parse.TableName;
 import org.apache.phoenix.query.QueryConstants;
+import org.apache.phoenix.query.QueryServices;
+import org.apache.phoenix.query.QueryServicesOptions;
 import org.apache.phoenix.schema.KeyValueSchema;
 import org.apache.phoenix.schema.PColumn;
 import org.apache.phoenix.schema.PName;
@@ -73,7 +78,6 @@ import org.apache.phoenix.trace.util.Tracing;
 import org.apache.phoenix.util.ByteUtil;
 import org.apache.phoenix.util.IndexUtil;
 import org.apache.phoenix.util.LogUtil;
-import org.apache.phoenix.util.SQLCloseable;
 import org.apache.phoenix.util.SQLCloseables;
 import org.apache.phoenix.util.ScanUtil;
 
@@ -112,6 +116,7 @@ public abstract class BaseQueryPlan implements QueryPlan {
     protected final Expression dynamicFilter;
     protected Long estimatedRows;
     protected Long estimatedSize;
+    protected Long estimateInfoTimestamp;
     private boolean explainPlanCalled;
     
 
@@ -196,20 +201,20 @@ public abstract class BaseQueryPlan implements QueryPlan {
 
     @Override
     public final ResultIterator iterator() throws SQLException {
-        return iterator(Collections.<SQLCloseable>emptyList(), DefaultParallelScanGrouper.getInstance(), null);
+        return iterator(DefaultParallelScanGrouper.getInstance());
     }
     
     @Override
     public final ResultIterator iterator(ParallelScanGrouper scanGrouper) throws SQLException {
-        return iterator(Collections.<SQLCloseable>emptyList(), scanGrouper, null);
+        return iterator(scanGrouper, null);
     }
 
     @Override
     public final ResultIterator iterator(ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
-        return iterator(Collections.<SQLCloseable>emptyList(), scanGrouper, scan);
+        return iterator(Collections.<ImmutableBytesPtr,ServerCache>emptyMap(), scanGrouper, scan);
     }
-    
-	private ResultIterator getWrappedIterator(final List<? extends SQLCloseable> dependencies,
+        
+	private ResultIterator getWrappedIterator(final Map<ImmutableBytesPtr,ServerCache> dependencies,
 			ResultIterator iterator) {
 		ResultIterator wrappedIterator = dependencies.isEmpty() ? iterator : new DelegateResultIterator(iterator) {
 			@Override
@@ -217,14 +222,15 @@ public abstract class BaseQueryPlan implements QueryPlan {
 				try {
 					super.close();
 				} finally {
-					SQLCloseables.closeAll(dependencies);
+					SQLCloseables.closeAll(dependencies.values());
 				}
 			}
 		};
 		return wrappedIterator;
 	}
 
-    public final ResultIterator iterator(final List<? extends SQLCloseable> dependencies, ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
+    public final ResultIterator iterator(final Map<ImmutableBytesPtr,ServerCache> caches,
+            ParallelScanGrouper scanGrouper, Scan scan) throws SQLException {
          if (scan == null) {
              scan = context.getScan();
          }
@@ -235,11 +241,11 @@ public abstract class BaseQueryPlan implements QueryPlan {
 		 * row to be scanned.
 		 */
         if (context.getScanRanges() == ScanRanges.NOTHING && !getStatement().isAggregate()) {
-            return getWrappedIterator(dependencies, ResultIterator.EMPTY_ITERATOR);
+        return getWrappedIterator(caches, ResultIterator.EMPTY_ITERATOR);
         }
         
         if (tableRef == TableRef.EMPTY_TABLE_REF) {
-            return getWrappedIterator(dependencies, newIterator(scanGrouper, scan));
+            return newIterator(scanGrouper, scan, caches);
         }
         
         // Set miscellaneous scan attributes. This is the last chance to set them before we
@@ -344,7 +350,7 @@ public abstract class BaseQueryPlan implements QueryPlan {
         	LOG.debug(LogUtil.addCustomAnnotations("Scan ready for iteration: " + scan, connection));
         }
         
-        ResultIterator iterator = getWrappedIterator(dependencies, newIterator(scanGrouper, scan));
+        ResultIterator iterator =  newIterator(scanGrouper, scan, caches);
         if (LOG.isDebugEnabled()) {
         	LOG.debug(LogUtil.addCustomAnnotations("Iterator ready: " + iterator, connection));
         }
@@ -468,7 +474,7 @@ public abstract class BaseQueryPlan implements QueryPlan {
         }
     }
 
-    abstract protected ResultIterator newIterator(ParallelScanGrouper scanGrouper, Scan scan) throws SQLException;
+    abstract protected ResultIterator newIterator(ParallelScanGrouper scanGrouper, Scan scan, Map<ImmutableBytesPtr,ServerCache> caches) throws SQLException;
     
     @Override
     public long getEstimatedSize() {
@@ -496,10 +502,24 @@ public abstract class BaseQueryPlan implements QueryPlan {
         if (context.getScanRanges() == ScanRanges.NOTHING) {
             return new ExplainPlan(Collections.singletonList("DEGENERATE SCAN OVER " + getTableRef().getTable().getName().getString()));
         }
-        
+
+        // If cost-based optimizer is enabled, we need to initialize a dummy iterator to
+        // get the stats for computing costs.
+        boolean costBased =
+                context.getConnection().getQueryServices().getConfiguration().getBoolean(
+                        QueryServices.COST_BASED_OPTIMIZER_ENABLED, QueryServicesOptions.DEFAULT_COST_BASED_OPTIMIZER_ENABLED);
+        if (costBased) {
+            ResultIterator iterator = iterator();
+            iterator.close();
+        }
         // Optimize here when getting explain plan, as queries don't get optimized until after compilation
         QueryPlan plan = context.getConnection().getQueryServices().getOptimizer().optimize(context.getStatement(), this);
         ExplainPlan exp = plan instanceof BaseQueryPlan ? new ExplainPlan(getPlanSteps(plan.iterator())) : plan.getExplainPlan();
+        if (!costBased) { // do not override estimates if they are used for cost calculation.
+            this.estimatedRows = plan.getEstimatedRowsToScan();
+            this.estimatedSize = plan.getEstimatedBytesToScan();
+            this.estimateInfoTimestamp = plan.getEstimateInfoTimestamp();
+        }
         return exp;
     }
 
@@ -528,6 +548,14 @@ public abstract class BaseQueryPlan implements QueryPlan {
             getExplainPlan();
         }
         return estimatedSize;
+    }
+
+    @Override
+    public Long getEstimateInfoTimestamp() throws SQLException {
+        if (!explainPlanCalled) {
+            getExplainPlan();
+        }
+        return estimateInfoTimestamp;
     }
 
 }

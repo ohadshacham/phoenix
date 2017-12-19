@@ -196,6 +196,8 @@ public interface QueryConstants {
     public static final byte[] DESC_SEPARATOR_BYTE_ARRAY = new byte[] {DESC_SEPARATOR_BYTE};
 
     public static final String DEFAULT_COPROCESS_PATH = "phoenix.jar";
+    public static final String DEFAULT_COPROCESS_JAR_NAME = "phoenix-[version]-server.jar";
+    
     public final static int MILLIS_IN_DAY = 1000 * 60 * 60 * 24;
 
     public static final String EMPTY_COLUMN_NAME = "_0";
@@ -397,4 +399,6 @@ public interface QueryConstants {
     public static final byte[] OFFSET_COLUMN = "c_offset".getBytes();
     public static final String LAST_SCAN = "LAST_SCAN";
     public static final byte[] UPGRADE_MUTEX = "UPGRADE_MUTEX".getBytes();
+    public static final String HASH_JOIN_CACHE_RETRIES = "hashjoin.client.retries.number";
+    public static final int DEFAULT_HASH_JOIN_CACHE_RETRIES = 5;
 }

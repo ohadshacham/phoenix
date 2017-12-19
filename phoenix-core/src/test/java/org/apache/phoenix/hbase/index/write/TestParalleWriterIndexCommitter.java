@@ -20,7 +20,7 @@ package org.apache.phoenix.hbase.index.write;
 import static org.junit.Assert.assertTrue;
 
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -62,7 +62,7 @@ public class TestParalleWriterIndexCommitter {
     ExecutorService exec = Executors.newFixedThreadPool(1);
     FakeTableFactory factory = new FakeTableFactory(
         Collections.<ImmutableBytesPtr, HTableInterface> emptyMap());
-    ParallelWriterIndexCommitter writer = new ParallelWriterIndexCommitter(VersionInfo.getVersion());
+    TrackingParallelWriterIndexCommitter writer = new TrackingParallelWriterIndexCommitter(VersionInfo.getVersion());
     Abortable mockAbort = Mockito.mock(Abortable.class);
     Stoppable mockStop = Mockito.mock(Stoppable.class);
     RegionCoprocessorEnvironment e =Mockito.mock(RegionCoprocessorEnvironment.class);
@@ -91,7 +91,7 @@ public class TestParalleWriterIndexCommitter {
     Stoppable stop = Mockito.mock(Stoppable.class);
     ExecutorService exec = Executors.newFixedThreadPool(1);
     Map<ImmutableBytesPtr, HTableInterface> tables =
-        new HashMap<ImmutableBytesPtr, HTableInterface>();
+        new LinkedHashMap<ImmutableBytesPtr, HTableInterface>();
     FakeTableFactory factory = new FakeTableFactory(tables);
 
     ImmutableBytesPtr tableName = new ImmutableBytesPtr(this.test.getTableName());
@@ -117,7 +117,7 @@ public class TestParalleWriterIndexCommitter {
     tables.put(tableName, table);
 
     // setup the writer and failure policy
-    ParallelWriterIndexCommitter writer = new ParallelWriterIndexCommitter(VersionInfo.getVersion());
+    TrackingParallelWriterIndexCommitter writer = new TrackingParallelWriterIndexCommitter(VersionInfo.getVersion());
     writer.setup(factory, exec, abort, stop, e);
     writer.write(indexUpdates, true);
     assertTrue("Writer returned before the table batch completed! Likely a race condition tripped",

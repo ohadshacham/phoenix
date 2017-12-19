@@ -294,6 +294,7 @@ public class ConnectionlessQueryServicesImpl extends DelegateQueryServices imple
                 scnProps.remove(PhoenixRuntime.TENANT_ID_ATTRIB);
                 String globalUrl = JDBCUtil.removeProperty(url, PhoenixRuntime.TENANT_ID_ATTRIB);
                 metaConnection = new PhoenixConnection(this, globalUrl, scnProps, newEmptyMetaData());
+                metaConnection.setRunningUpgrade(true);
                 try {
                     metaConnection.createStatement().executeUpdate(QueryConstants.CREATE_TABLE_METADATA);
                 } catch (TableAlreadyExistsException ignore) {
@@ -379,6 +380,13 @@ public class ConnectionlessQueryServicesImpl extends DelegateQueryServices imple
         PTable index = metaData.getTableRef(new PTableKey(tenantId, indexTableName)).getTable();
         index = PTableImpl.makePTable(index,newState == PIndexState.USABLE ? PIndexState.ACTIVE : newState == PIndexState.UNUSABLE ? PIndexState.INACTIVE : newState);
         return new MetaDataMutationResult(MutationCode.TABLE_ALREADY_EXISTS, 0, index);
+    }
+
+    @Override
+    public MetaDataMutationResult updateIndexState(List<Mutation> tableMetadata,
+            String parentTableName, Map<String, List<Pair<String, Object>>> stmtProperties,
+            PTable table) throws SQLException {
+        return updateIndexState(tableMetadata,parentTableName);
     }
 
     @Override

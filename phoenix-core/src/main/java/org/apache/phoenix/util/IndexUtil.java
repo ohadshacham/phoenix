@@ -17,6 +17,9 @@
  */
 package org.apache.phoenix.util;
 
+import static org.apache.phoenix.coprocessor.MetaDataProtocol.PHOENIX_MAJOR_VERSION;
+import static org.apache.phoenix.coprocessor.MetaDataProtocol.PHOENIX_MINOR_VERSION;
+import static org.apache.phoenix.coprocessor.MetaDataProtocol.PHOENIX_PATCH_NUMBER;
 import static org.apache.phoenix.query.QueryConstants.LOCAL_INDEX_COLUMN_FAMILY_PREFIX;
 import static org.apache.phoenix.query.QueryConstants.VALUE_COLUMN_FAMILY;
 import static org.apache.phoenix.query.QueryConstants.VALUE_COLUMN_QUALIFIER;
@@ -70,7 +73,7 @@ import org.apache.phoenix.coprocessor.generated.MetaDataProtos.MetaDataService;
 import org.apache.phoenix.coprocessor.generated.MetaDataProtos.UpdateIndexStateRequest;
 import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
-import org.apache.phoenix.execute.MutationState.RowMutationState;
+import org.apache.phoenix.execute.MutationState.MultiRowMutationState;
 import org.apache.phoenix.execute.TupleProjector;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.KeyValueColumnExpression;
@@ -81,6 +84,7 @@ import org.apache.phoenix.hbase.index.ValueGetter;
 import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
+import org.apache.phoenix.hbase.index.util.VersionUtil;
 import org.apache.phoenix.index.IndexMaintainer;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
@@ -203,27 +207,35 @@ public class IndexUtil {
     }
     
     public static PColumn getDataColumn(PTable dataTable, String indexColumnName) {
+        PColumn column = getDataColumnOrNull(dataTable, indexColumnName);
+        if (column == null) {
+            throw new IllegalArgumentException("Could not find column \"" + SchemaUtil.getColumnName(getDataColumnFamilyName(indexColumnName), getDataColumnName(indexColumnName)) + " in " + dataTable);
+        }
+        return column;
+    }
+    
+    public static PColumn getDataColumnOrNull(PTable dataTable, String indexColumnName) {
         int pos = indexColumnName.indexOf(INDEX_COLUMN_NAME_SEP);
         if (pos < 0) {
-            throw new IllegalArgumentException("Could not find expected '" + INDEX_COLUMN_NAME_SEP +  "' separator in index column name of \"" + indexColumnName + "\"");
+            return null;
         }
         if (pos == 0) {
             try {
                 return dataTable.getPKColumn(indexColumnName.substring(1));
             } catch (ColumnNotFoundException e) {
-                throw new IllegalArgumentException("Could not find PK column \"" +  indexColumnName.substring(pos+1) + "\" in index column name of \"" + indexColumnName + "\"", e);
+                return null;
             }
         }
         PColumnFamily family;
         try {
             family = dataTable.getColumnFamily(getDataColumnFamilyName(indexColumnName));                
         } catch (ColumnFamilyNotFoundException e) {
-            throw new IllegalArgumentException("Could not find column family \"" +  indexColumnName.substring(0, pos) + "\" in index column name of \"" + indexColumnName + "\"", e);
+            return null;
         }
         try {
             return family.getPColumnForColumnName(indexColumnName.substring(pos+1));
         } catch (ColumnNotFoundException e) {
-            throw new IllegalArgumentException("Could not find column \"" +  indexColumnName.substring(pos+1) + "\" in index column name of \"" + indexColumnName + "\"", e);
+            return null;
         }
     }
     
@@ -284,7 +296,7 @@ public class IndexUtil {
     }
     
     public static List<Mutation> generateIndexData(final PTable table, PTable index,
-            final Map<ImmutableBytesPtr, RowMutationState> valuesMap, List<Mutation> dataMutations, final KeyValueBuilder kvBuilder, PhoenixConnection connection)
+            final MultiRowMutationState multiRowMutationState, List<Mutation> dataMutations, final KeyValueBuilder kvBuilder, PhoenixConnection connection)
             throws SQLException {
         try {
         	final ImmutableBytesPtr ptr = new ImmutableBytesPtr();
@@ -682,7 +694,7 @@ public class IndexUtil {
     }
 
     public static byte[][] getViewConstants(PTable dataTable) {
-        if (dataTable.getType() != PTableType.VIEW) return null;
+        if (dataTable.getType() != PTableType.VIEW && dataTable.getType() != PTableType.PROJECTED) return null;
         int dataPosOffset = (dataTable.getBucketNum() != null ? 1 : 0) + (dataTable.isMultiTenant() ? 1 : 0);
         ImmutableBytesWritable ptr = new ImmutableBytesWritable();
         List<byte[]> viewConstants = new ArrayList<byte[]>();
@@ -711,10 +723,15 @@ public class IndexUtil {
             mutations.toArray(new Mutation[mutations.size()]),
             HConstants.NO_NONCE, HConstants.NO_NONCE);
     }
-
+    
     public static MetaDataMutationResult updateIndexState(String indexTableName, long minTimeStamp,
             HTableInterface metaTable, PIndexState newState) throws Throwable {
         byte[] indexTableKey = SchemaUtil.getTableKeyFromFullName(indexTableName);
+        return updateIndexState(indexTableKey, minTimeStamp, metaTable, newState);
+    }
+    
+    public static MetaDataMutationResult updateIndexState(byte[] indexTableKey, long minTimeStamp,
+            HTableInterface metaTable, PIndexState newState) throws Throwable {
         // Mimic the Put that gets generated by the client on an update of the index state
         Put put = new Put(indexTableKey);
         put.add(PhoenixDatabaseMetaData.TABLE_FAMILY_BYTES, PhoenixDatabaseMetaData.INDEX_STATE_BYTES,
@@ -736,6 +753,7 @@ public class IndexUtil {
                             MutationProto mp = ProtobufUtil.toProto(m);
                             builder.addTableMetadataMutations(mp.toByteString());
                         }
+                        builder.setClientVersion(VersionUtil.encodeVersion(PHOENIX_MAJOR_VERSION, PHOENIX_MINOR_VERSION, PHOENIX_PATCH_NUMBER));
                         instance.updateIndexState(controller, builder.build(), rpcCallback);
                         if (controller.getFailedOn() != null) { throw controller.getFailedOn(); }
                         return rpcCallback.get();
@@ -788,7 +806,12 @@ public class IndexUtil {
     }
 
     public static void updateIndexState(PhoenixConnection conn, String indexTableName,
-    		PIndexState newState, Long indexDisableTimestamp) throws SQLException {
+            PIndexState newState, Long indexDisableTimestamp) throws SQLException {
+        updateIndexState(conn, indexTableName, newState, indexDisableTimestamp, HConstants.LATEST_TIMESTAMP);
+    }
+    
+    public static void updateIndexState(PhoenixConnection conn, String indexTableName,
+    		PIndexState newState, Long indexDisableTimestamp, Long expectedMaxTimestamp) throws SQLException {
     	byte[] indexTableKey = SchemaUtil.getTableKeyFromFullName(indexTableName);
     	String schemaName = SchemaUtil.getSchemaNameFromFullName(indexTableName);
     	String indexName = SchemaUtil.getTableNameFromFullName(indexTableName);
@@ -796,10 +819,12 @@ public class IndexUtil {
     	// index state
     	Put put = new Put(indexTableKey);
     	put.addColumn(PhoenixDatabaseMetaData.TABLE_FAMILY_BYTES, PhoenixDatabaseMetaData.INDEX_STATE_BYTES,
+                expectedMaxTimestamp,
     			newState.getSerializedBytes());
         if (indexDisableTimestamp != null) {
             put.addColumn(PhoenixDatabaseMetaData.TABLE_FAMILY_BYTES,
                 PhoenixDatabaseMetaData.INDEX_DISABLE_TIMESTAMP_BYTES,
+                expectedMaxTimestamp,
                 PLong.INSTANCE.toBytes(indexDisableTimestamp));
         }
         if (newState == PIndexState.ACTIVE) {
