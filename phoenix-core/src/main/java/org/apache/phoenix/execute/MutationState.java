@@ -218,15 +218,7 @@ public class MutationState implements SQLCloseable {
      */
     public void commitDDLFence(PTable dataTable) throws SQLException {
         if (dataTable.isTransactional()) {
-            try {
                 phoenixTransactionContext.commitDDLFence(dataTable, logger);
-            } finally {
-                // The client expects a transaction to be in progress on the txContext while the
-                // VisibilityFence.prepareWait() starts a new tx and finishes/aborts it. After it's
-                // finished, we start a new one here.
-                // TODO: seems like an autonomous tx capability in Tephra would be useful here.
-                phoenixTransactionContext.begin();
-            }
         }
     }
     
@@ -1144,8 +1136,14 @@ public class MutationState implements SQLCloseable {
             if (connection.getTenantId() != null) {
                 mutation.setAttribute(PhoenixRuntime.TENANT_ID_ATTRIB, tenantIdBytes);
             }
+            if (uuidValue != null) {
+                System.out.println("Set INDEX_UUID attribute for " + Bytes.toString(mutation.getRow()));
+                System.out.flush();
+            }
             mutation.setAttribute(PhoenixIndexCodec.INDEX_UUID, uuidValue);
             if (attribValue != null) {
+                System.out.println("Set INDEX_PROTO_MD attribute for " + Bytes.toString(mutation.getRow()));
+                System.out.flush();
                 mutation.setAttribute(PhoenixIndexCodec.INDEX_PROTO_MD, attribValue);
                 if (txState.length > 0) {
                     mutation.setAttribute(BaseScannerRegionObserver.TX_STATE, txState);

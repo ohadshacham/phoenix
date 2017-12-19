@@ -19,6 +19,7 @@ package org.apache.phoenix.transaction;
 
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -43,11 +44,13 @@ import org.apache.hadoop.hbase.client.coprocessor.Batch.Call;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Callback;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
+import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hdfs.server.namenode.UnsupportedActionException;
 import org.apache.omid.transaction.TTable;
 import org.apache.omid.transaction.Transaction;
 import org.apache.phoenix.exception.SQLExceptionCode;
 import org.apache.phoenix.exception.SQLExceptionInfo;
+import org.apache.phoenix.index.PhoenixIndexCodec;
 import org.apache.phoenix.schema.PTableType;
 import org.apache.phoenix.schema.PTable;
 
@@ -71,7 +74,7 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
         OmidTransactionContext omidTransactionContext = (OmidTransactionContext) ctx;
 
         try {
-            tTable = new TTable(hTable, false);
+            tTable = new TTable(hTable, true);
         } catch (IOException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
@@ -110,7 +113,10 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public ResultScanner getScanner(Scan scan) throws IOException {
-       return tTable.getScanner(tx, scan);
+        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
+        System.out.flush();
+        scan.setTimeRange(0, Long.MAX_VALUE);
+        return tTable.getScanner(tx, scan);
     }
 
     @Override
@@ -140,18 +146,27 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public ResultScanner getScanner(byte[] family) throws IOException {
+        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
+        System.out.flush();
         return tTable.getScanner(tx, family);
     }
 
     @Override
     public ResultScanner getScanner(byte[] family, byte[] qualifier)
             throws IOException {
+        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
+        System.out.flush();
         return tTable.getScanner(tx, family, qualifier);
     }
 
     @Override
     public void put(List<Put> puts) throws IOException {
-        tTable.put(tx, puts);
+        try {
+            tTable.put(tx, puts);
+        } catch (InterruptedException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
     }
 
     @Override
@@ -242,9 +257,28 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public Object[] batch(List<? extends Row> actions) throws IOException,
             InterruptedException {
+
+        System.out.println("Batch transaction " + tx.getTransactionId() + " write pointer " + tx.getWriteTimestamp() + " size " + actions.size() + " table: " + Bytes.toString(tTable.getTableName()));
+        System.out.flush();
+
+        List<Put> putList = new ArrayList<Put>();
+
        for (Row put : actions) {
-           this.put((Put) put);
+           System.out.println("Batch transaction " + tx.getTransactionId() + " " + Bytes.toString(put.getRow()) + " table: " + Bytes.toString(tTable.getTableName()));
+           System.out.flush();
+//               this.put((Put) put);
+
+
+           if (((Put)put).getAttribute(PhoenixIndexCodec.INDEX_UUID) != null) {
+               System.out.println("Has index attribute " + Bytes.toString(put.getRow()));
+               System.out.flush();
+           }
+
+           putList.add((Put) put);
        }
+
+
+       this.put(putList);
 
        return null;
     }

@@ -21,6 +21,8 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.Random;
+
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
@@ -47,6 +49,7 @@ import org.apache.omid.transaction.Transaction;
 import org.apache.omid.transaction.TransactionException;
 import org.apache.omid.transaction.TransactionManager;
 //import org.apache.omid.tso.TSOMockModule;
+import org.apache.omid.transaction.Transaction.Status;
 import org.apache.omid.transaction.OmidCompactor;
 import org.apache.omid.tso.TSOMockModule;
 //import org.apache.omid.tso.TSOMockModule;
@@ -55,6 +58,8 @@ import org.apache.omid.tso.TSOServerConfig;
 import org.apache.omid.tso.client.OmidClientConfiguration;
 import org.apache.omid.tso.client.OmidClientConfiguration.ConflictDetectionLevel;
 import org.apache.omid.tso.client.TSOClient;
+import org.apache.omid.TestUtils;
+
 
 import com.google.inject.Guice;
 import com.google.inject.Injector;
@@ -66,13 +71,14 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     private TransactionManager tm;
     private HBaseTransaction tx;
-    private InMemoryCommitTable commitTable;
-    private CommitTable.Client commitTableClient = null;
 
+    private static CommitTable.Client commitTableClient = null;
     private static final long MAX_NON_TX_TIMESTAMP = (long) (System.currentTimeMillis() * 1.1);
 
     // For testing
     private TSOServer tso;
+
+    private Random rand = new Random();
 
     public OmidTransactionContext() {
         this.tx = null;
@@ -127,8 +133,11 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
                     .buildException();
         }
 
+
         try {
             tx = (HBaseTransaction) tm.begin();
+            System.out.println("Ohad transaction " + tx + " started.");
+            System.out.flush();
         } catch (TransactionException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
@@ -143,13 +152,21 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
             return;
 
         try {
+            System.out.println("Ohad commit transaction " + tx);
+            System.out.flush();
             tm.commit(tx);
+            System.out.println("Ohad successfully commit transaction " + tx);
+            System.out.flush();
         } catch (TransactionException e) {
+            System.out.println("Ohad Transaction exception for " + tx);
+            System.out.flush();
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
                     .setMessage(e.getMessage()).setRootCause(e).build()
                     .buildException();
         } catch (RollbackException e) {
+            System.out.println("Ohad Rollback exception for " + tx);
+            System.out.flush();
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_CONFLICT_EXCEPTION)
                     .setMessage(e.getMessage()).setRootCause(e).build()
@@ -159,8 +176,9 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public void abort() throws SQLException {
-        if (tx == null || tm == null)
+        if (tx == null || tm == null || tx.getStatus() != Status.RUNNING) {
             return;
+        }
 
         try {
             tm.rollback(tx);
@@ -170,22 +188,32 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
                     .setMessage(e.getMessage()).setRootCause(e).build()
                     .buildException();
         }
+        System.out.println("Ohad rollback transaction " + tx.getTransactionId());
+        System.out.flush();
         
     }
 
     @Override
     public void checkpoint(boolean hasUncommittedData) throws SQLException {
-        try {
-            tx.checkpoint();
-        } catch (TransactionException e) {
-            throw new SQLException(e);
+        if (hasUncommittedData) {
+            try {
+                tx.checkpoint();
+                System.out.println("Ohad checkpoint for transaction " + tx.getTransactionId() + " new write pointer " + tx.getWriteTimestamp());
+                System.out.flush();
+            } catch (TransactionException e) {
+                throw new SQLException(e);
+            }
         }
+        tx.setVisibilityLevel(VisibilityLevel.SNAPSHOT_EXCLUDE_CURRENT);
     }
 
     @Override
     public void commitDDLFence(PTable dataTable, Logger logger) throws SQLException {
+
         try {
             tx = (HBaseTransaction) transactionManager.fence(dataTable.getName().getBytes());
+            System.out.println("Fence created at " + tx.getReadTimestamp());
+            System.out.flush();
             if (logger.isInfoEnabled()) {
                 logger.info("Added write fence at ~"
                         + tx.getReadTimestamp());
@@ -318,7 +346,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     @Override
     public BaseRegionObserver getCoProcessor() {
 //        return null;
-        return new OmidCompactor();
+//        return new OmidCompactor();
 //        TSOServerConfig tsoConfig = new TSOServerConfig();
 //        tsoConfig.setPort(1234);
 //        tsoConfig.setConflictMapSize(1000);
@@ -328,7 +356,11 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 //
 //        commitTable = (InMemoryCommitTable) injector.getInstance(CommitTable.class);
 //        commitTableClient = commitTable.getClient();
-//        return new OmidSnapshotFilter(commitTableClient);
+//        omidSnapshotFilter = new OmidSnapshotFilter(commitTableClient); //commitTableClient);
+        
+        
+        
+        return new OmidSnapshotFilter(commitTableClient);
     }
 
     @Override
@@ -372,9 +404,13 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     public void setupTxManager(Configuration config, String url) throws SQLException {
         // TSO Setup
         TSOServerConfig tsoConfig = new TSOServerConfig();
-        tsoConfig.setPort(1234);
+
+        int  port = rand.nextInt(65534) + 1;
+
+        tsoConfig.setPort(port);
         tsoConfig.setConflictMapSize(1000);
         tsoConfig.setTimestampType("WORLD_TIME");
+        //tsoConfig.setTimestampType("INCREMENTAL");
         Injector injector = Guice.createInjector(new TSOMockModule(tsoConfig));
         tso = injector.getInstance(TSOServer.class);
         tso.startAndWait();
@@ -393,8 +429,10 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 //        }
 
         OmidClientConfiguration clientConfig = new OmidClientConfiguration();
-        clientConfig.setConnectionString("localhost:1234");
+        clientConfig.setConnectionString("localhost:" + port);
         clientConfig.setConflictAnalysisLevel(ConflictDetectionLevel.ROW);
+
+
 
         InMemoryCommitTable commitTable = (InMemoryCommitTable) injector.getInstance(CommitTable.class);
 
@@ -403,9 +441,13 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
             TSOClient client = TSOClient.newInstance(clientConfig);
 
             HBaseOmidClientConfiguration clientConf = new HBaseOmidClientConfiguration();
-            clientConf.setConnectionString("localhost:1234");
+            clientConf.setConnectionString("localhost:" + port);
+            clientConf.setConflictAnalysisLevel(ConflictDetectionLevel.ROW);
             //        clientConf.setHBaseConfiguration(hbaseConf);
-            this.commitTableClient = commitTable.getClient();
+            commitTableClient = commitTable.getClient();
+
+//            omidSnapshotFilter.setCommitTableClient(commitTableClient);
+
             transactionManager = HBaseTransactionManager.builder(clientConf).commitTableClient(commitTableClient)
                     .tsoClient(client).build();
         } catch (IOException | InterruptedException e) {
