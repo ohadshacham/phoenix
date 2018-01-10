@@ -490,11 +490,11 @@ public class MutationState implements SQLCloseable {
             final long mutationTimestamp, final long serverTimestamp, boolean includeAllIndexes, final boolean sendAll) { 
         final PTable table = tableRef.getTable();
         final Iterator<PTable> indexes = // Only maintain tables with immutable rows through this client-side mechanism
-                 includeAllIndexes ?
-                     IndexMaintainer.maintainedIndexes(table.getIndexes().iterator()) :
-                         table.isImmutableRows() ?
-                            IndexMaintainer.maintainedGlobalIndexes(table.getIndexes().iterator()) :
-                                Collections.<PTable>emptyIterator();
+                (includeAllIndexes  || table.isTransactional()) ?
+                         IndexMaintainer.maintainedIndexes(table.getIndexes().iterator()) :
+                             (table.isImmutableRows()) ?
+                                IndexMaintainer.maintainedGlobalIndexes(table.getIndexes().iterator()) :
+                                    Collections.<PTable>emptyIterator();
         final List<Mutation> mutationList = Lists.newArrayListWithExpectedSize(values.size());
         final List<Mutation> mutationsPertainingToIndex = indexes.hasNext() ? Lists.<Mutation>newArrayListWithExpectedSize(values.size()) : null;
         generateMutations(tableRef, mutationTimestamp, serverTimestamp, values, mutationList, mutationsPertainingToIndex);

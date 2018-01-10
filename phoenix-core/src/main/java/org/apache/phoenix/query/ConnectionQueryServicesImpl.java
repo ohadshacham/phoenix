@@ -850,9 +850,9 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     && !SchemaUtil.isMetaTable(tableName)
                     && !SchemaUtil.isStatsTable(tableName)) {
                 if (isTransactional) {
-                    if (!descriptor.hasCoprocessor(PhoenixTransactionalIndexer.class.getName())) {
-                        descriptor.addCoprocessor(PhoenixTransactionalIndexer.class.getName(), null, priority, null);
-                    }
+//                    if (!descriptor.hasCoprocessor(PhoenixTransactionalIndexer.class.getName())) {
+//                        descriptor.addCoprocessor(PhoenixTransactionalIndexer.class.getName(), null, priority, null);
+//                    }
                     // For alter table, remove non transactional index coprocessor
                     if (descriptor.hasCoprocessor(Indexer.class.getName())) {
                         descriptor.removeCoprocessor(Indexer.class.getName());

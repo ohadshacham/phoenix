@@ -255,6 +255,13 @@ public abstract class BaseIndexIT extends ParallelStatsDisabledIT {
             String ddl ="CREATE TABLE " + fullTableName + TestUtil.TEST_TABLE_SCHEMA + tableDDLOptions;
             Statement stmt1 = conn1.createStatement();
             stmt1.execute(ddl);
+
+            String indexName = SchemaUtil.getTableNameFromFullName(fullIndexName);
+            ddl = "CREATE " + (localIndex ? "LOCAL" : "") + " INDEX " + indexName + " ON " + fullTableName
+                    + " (long_pk, varchar_pk)"
+                    + " INCLUDE (long_col1, long_col2)";
+            stmt1.execute(ddl);
+
             BaseTest.populateTestTable(fullTableName);
 
             ResultSet rs;
@@ -296,11 +303,11 @@ public abstract class BaseIndexIT extends ParallelStatsDisabledIT {
                     assertFalse(rs.next());
                 }
 
-                String indexName = SchemaUtil.getTableNameFromFullName(fullIndexName);
-                ddl = "CREATE " + (localIndex ? "LOCAL" : "") + " INDEX " + indexName + " ON " + fullTableName
-                        + " (long_pk, varchar_pk)"
-                        + " INCLUDE (long_col1, long_col2)";
-                stmt1.execute(ddl);
+//                String indexName = SchemaUtil.getTableNameFromFullName(fullIndexName);
+//                ddl = "CREATE " + (localIndex ? "LOCAL" : "") + " INDEX " + indexName + " ON " + fullTableName
+//                        + " (long_pk, varchar_pk)"
+//                        + " INCLUDE (long_col1, long_col2)";
+//                stmt1.execute(ddl);
 
                 /*
                  * Commit upsert after index created through different connection.
