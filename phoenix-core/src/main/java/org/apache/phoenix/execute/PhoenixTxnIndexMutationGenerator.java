@@ -15,7 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.phoenix.index;
+package org.apache.phoenix.execute;
 
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -25,14 +25,12 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hbase.*;
 import org.apache.hadoop.hbase.client.*;
-import org.apache.hadoop.hbase.coprocessor.BaseRegionObserver;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.phoenix.compile.ScanRanges;
-import org.apache.phoenix.coprocessor.BaseScannerRegionObserver;
 import org.apache.phoenix.filter.SkipScanFilter;
 import org.apache.phoenix.hbase.index.MultiMutation;
 import org.apache.phoenix.hbase.index.ValueGetter;
@@ -43,15 +41,14 @@ import org.apache.phoenix.hbase.index.covered.update.ColumnReference;
 import org.apache.phoenix.hbase.index.covered.update.ColumnTracker;
 import org.apache.phoenix.hbase.index.covered.update.IndexedColumnGroup;
 import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
-import org.apache.phoenix.hbase.index.write.IndexWriter;
+import org.apache.phoenix.index.IndexMaintainer;
+import org.apache.phoenix.index.PhoenixIndexCodec;
 import org.apache.phoenix.jdbc.PhoenixConnection;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.schema.PTable;
 import org.apache.phoenix.schema.types.PVarbinary;
 import org.apache.phoenix.transaction.PhoenixTransactionContext;
 import org.apache.phoenix.transaction.PhoenixTransactionContext.PhoenixVisibilityLevel;
-import org.apache.phoenix.transaction.PhoenixTransactionalTable;
-import org.apache.phoenix.transaction.TransactionFactory;
 import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.SchemaUtil;
 
@@ -59,16 +56,10 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.util.*;
 
-import static org.apache.phoenix.hbase.index.write.IndexWriterUtils.*;
-
 
 public class PhoenixTxnIndexMutationGenerator {
 
     private static final Log LOG = LogFactory.getLog(PhoenixTxnIndexMutationGenerator.class);
-
-    private PhoenixIndexCodec codec;
-    private IndexWriter writer;
-    private boolean stopped;
 
     public static Iterator<Mutation> getMutationIterator(final MiniBatchOperationInProgress<Mutation> miniBatchOp) {
         return new Iterator<Mutation>() {
@@ -104,7 +95,7 @@ public class PhoenixTxnIndexMutationGenerator {
 
     //BaseScannerRegionObserver.ReplayWrite.fromBytes(attributes.get(BaseScannerRegionObserver.REPLAY_WRITES));
 
-    public Collection<Pair<Mutation, byte[]>> getIndexUpdates(final PTable table, PTable index, List<Mutation> dataMutations,
+    public List<Mutation> getIndexUpdates(final PTable table, PTable index, List<Mutation> dataMutations,
                                                               PhoenixConnection connection, PhoenixTransactionContext txnContext,
                                                               byte[] txRollbackAttribute, boolean replyWrite) throws IOException, SQLException {
         if (txnContext == null) {
@@ -142,6 +133,7 @@ public class PhoenixTxnIndexMutationGenerator {
             // add the mutation to the batch set
             ImmutableBytesPtr row = new ImmutableBytesPtr(m.getRow());
             // if we have no non PK columns, no need to find the prior values
+
             boolean requiresPriorRowState =  !isImmutable || (maintainer.isRowDeleted(m) && !maintainer.getIndexedColumns().isEmpty());
             if (mutations != findPriorValueMutations && requiresPriorRowState) {
                 addMutation(findPriorValueMutations, row, m);
@@ -149,7 +141,7 @@ public class PhoenixTxnIndexMutationGenerator {
             addMutation(mutations, row, m);
         }
         
-        Collection<Pair<Mutation, byte[]>> indexUpdates = new ArrayList<Pair<Mutation, byte[]>>(mutations.size() * 2);
+        List<Mutation> indexUpdates = new ArrayList<Mutation>(mutations.size() * 2);
         try {
             // Track if we have row keys with Delete mutations (or Puts that are
             // Tephra's Delete marker). If there are none, we don't need to do the scan for
@@ -206,7 +198,7 @@ public class PhoenixTxnIndexMutationGenerator {
             ResultScanner scanner,
             PhoenixTransactionContext txnContext, 
             Set<ColumnReference> upsertColumns, 
-            Collection<Pair<Mutation, byte[]>> indexUpdates,
+            Collection<Mutation> indexUpdates,
             Map<ImmutableBytesPtr, MultiMutation> mutations,
             Map<ImmutableBytesPtr, MultiMutation> mutationsToFindPreviousValue,
             boolean replyWrite,
@@ -236,7 +228,7 @@ public class PhoenixTxnIndexMutationGenerator {
             byte[] txRollbackAttribute,
             ResultScanner scanner,
             PhoenixTransactionContext tx, Set<ColumnReference> mutableColumns,
-            Collection<Pair<Mutation, byte[]>> indexUpdates,
+            Collection<Mutation> indexUpdates,
             Map<ImmutableBytesPtr, MultiMutation> mutations,
             boolean replyWrite,
             final PTable table,
@@ -378,7 +370,7 @@ public class PhoenixTxnIndexMutationGenerator {
         return indexUpdates;
     }
 
-    private void generateDeletes(Collection<Pair<Mutation, byte[]>> indexUpdates,
+    private void generateDeletes(Collection<Mutation> indexUpdates,
             byte[] attribValue,
             TxTableState state,
             IndexMaintainer maintainer,
@@ -389,12 +381,12 @@ public class PhoenixTxnIndexMutationGenerator {
         for (IndexUpdate delete : deletes) {
             if (delete.isValid()) {
                 delete.getUpdate().setAttribute(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY, attribValue);
-                indexUpdates.add(new Pair<Mutation, byte[]>(delete.getUpdate(),delete.getTableName()));
+                indexUpdates.add(delete.getUpdate());
             }
         }
     }
 
-    private boolean generatePuts(Collection<Pair<Mutation, byte[]>> indexUpdates,
+    private boolean generatePuts(Collection<Mutation> indexUpdates,
             TxTableState state,
             IndexMaintainer maintainer,
             boolean replyWrite,
@@ -405,7 +397,7 @@ public class PhoenixTxnIndexMutationGenerator {
         boolean validPut = false;
         for (IndexUpdate put : puts) {
             if (put.isValid()) {
-                indexUpdates.add(new Pair<Mutation, byte[]>(put.getUpdate(),put.getTableName()));
+                indexUpdates.add(put.getUpdate());
                 validPut = true;
             }
         }

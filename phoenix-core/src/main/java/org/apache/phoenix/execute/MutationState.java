@@ -487,7 +487,7 @@ public class MutationState implements SQLCloseable {
     }
     
     private Iterator<Pair<PName,List<Mutation>>> addRowMutations(final TableRef tableRef, final MultiRowMutationState values,
-            final long mutationTimestamp, final long serverTimestamp, boolean includeAllIndexes, final boolean sendAll) { 
+            final long mutationTimestamp, final long serverTimestamp, boolean includeAllIndexes, final boolean sendAll) {
         final PTable table = tableRef.getTable();
         final Iterator<PTable> indexes = // Only maintain tables with immutable rows through this client-side mechanism
                 (includeAllIndexes  || table.isTransactional()) ?
@@ -515,9 +515,17 @@ public class MutationState implements SQLCloseable {
                 PTable index = indexes.next();
                 List<Mutation> indexMutations;
                 try {
-                    indexMutations =
-                    		IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
-                                connection.getKeyValueBuilder(), connection);
+//                    indexMutations =
+//                    		IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
+//                                connection.getKeyValueBuilder(), connection);
+
+                    Map<String,byte[]> updateAttributes = mutationsPertainingToIndex.get(0).getAttributesMap();
+                    boolean replyWrite = (BaseScannerRegionObserver.ReplayWrite.fromBytes(updateAttributes.get(BaseScannerRegionObserver.REPLAY_WRITES)) != null);
+                    byte[] txRollbackAttribute = updateAttributes.get(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY);
+
+                    indexMutations = (new PhoenixTxnIndexMutationGenerator()).getIndexUpdates(table, index, mutationsPertainingToIndex,
+                            connection, getPhoenixTransactionContext(), txRollbackAttribute, replyWrite);
+
                     // we may also have to include delete mutations for immutable tables if we are not processing all the tables in the mutations map
                     if (!sendAll) {
                         TableRef key = new TableRef(index);
@@ -528,7 +536,7 @@ public class MutationState implements SQLCloseable {
                             indexMutations.addAll(deleteMutations);
                         }
                     }
-                } catch (SQLException e) {
+                } catch (SQLException | IOException e) {
                     throw new IllegalDataException(e);
                 }
                 return new Pair<PName,List<Mutation>>(index.getPhysicalName(),indexMutations);
