@@ -31,6 +31,7 @@ import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.phoenix.compile.ScanRanges;
+import org.apache.phoenix.coprocessor.BaseScannerRegionObserver;
 import org.apache.phoenix.filter.SkipScanFilter;
 import org.apache.phoenix.hbase.index.MultiMutation;
 import org.apache.phoenix.hbase.index.ValueGetter;
@@ -82,7 +83,7 @@ public class PhoenixTxnIndexMutationGenerator {
             
         };
     }
-    
+
     private static void addMutation(Map<ImmutableBytesPtr, MultiMutation> mutations, ImmutableBytesPtr row, Mutation m) {
         MultiMutation stored = mutations.get(row);
         // we haven't seen this row before, so add it
@@ -93,14 +94,15 @@ public class PhoenixTxnIndexMutationGenerator {
         stored.addAll(m);
     }
 
-    //BaseScannerRegionObserver.ReplayWrite.fromBytes(attributes.get(BaseScannerRegionObserver.REPLAY_WRITES));
-
     public List<Mutation> getIndexUpdates(final PTable table, PTable index, List<Mutation> dataMutations,
-                                                              PhoenixConnection connection, PhoenixTransactionContext txnContext,
-                                                              byte[] txRollbackAttribute, boolean replyWrite) throws IOException, SQLException {
+                                                              PhoenixConnection connection, PhoenixTransactionContext txnContext) throws IOException, SQLException {
         if (txnContext == null) {
             throw new NullPointerException("Expected to find transaction in metadata for " + table.getName().getString());
         }
+
+        Map<String,byte[]> updateAttributes = dataMutations.get(0).getAttributesMap();
+        boolean replyWrite = (BaseScannerRegionObserver.ReplayWrite.fromBytes(updateAttributes.get(BaseScannerRegionObserver.REPLAY_WRITES)) != null);
+        byte[] txRollbackAttribute = updateAttributes.get(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY);
 
         IndexMaintainer maintainer = index.getIndexMaintainer(table, connection);
 

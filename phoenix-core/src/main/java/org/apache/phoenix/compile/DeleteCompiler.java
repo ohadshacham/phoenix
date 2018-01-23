@@ -205,6 +205,7 @@ public class DeleteCompiler {
                 // When issuing deletes, we do not care about the row time ranges. Also, if the table had a row timestamp column, then the
                 // row key will already have its value.
                 // Check for otherTableRefs being empty required when deleting directly from the index
+//                if (otherTableRefs.isEmpty() || table.getType() == PTableType.INDEX) { // table.getIndexType() != IndexType.LOCAL) {
                 if (otherTableRefs.isEmpty() || table.getIndexType() != IndexType.LOCAL) {
                     mutations.put(rowKeyPtr, new RowMutationState(PRow.DELETE_MARKER, 0, statement.getConnection().getStatementExecutionCounter(), NULL_ROWTIMESTAMP_INFO, null));
                 }

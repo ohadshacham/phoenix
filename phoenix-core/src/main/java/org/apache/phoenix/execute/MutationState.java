@@ -25,14 +25,8 @@ import static org.apache.phoenix.monitoring.GlobalClientMetrics.GLOBAL_MUTATION_
 
 import java.io.IOException;
 import java.sql.SQLException;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
 
 import javax.annotation.Nonnull;
 import javax.annotation.concurrent.Immutable;
@@ -510,6 +504,10 @@ public class MutationState implements SQLCloseable {
             public Pair<PName, List<Mutation>> next() {
                 if (isFirst) {
                     isFirst = false;
+                    if (! table.getName().equals("SYSTEM.CATALOG")) {
+                        System.out.println("Ohad: isFirst, mutation size: " + mutationList.size() + " table name: " + table.getName());
+                        System.out.flush();
+                    }
                     return new Pair<PName,List<Mutation>>(table.getPhysicalName(), mutationList);
                 }
                 PTable index = indexes.next();
@@ -518,13 +516,16 @@ public class MutationState implements SQLCloseable {
 //                    indexMutations =
 //                    		IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
 //                                connection.getKeyValueBuilder(), connection);
-
-                    Map<String,byte[]> updateAttributes = mutationsPertainingToIndex.get(0).getAttributesMap();
-                    boolean replyWrite = (BaseScannerRegionObserver.ReplayWrite.fromBytes(updateAttributes.get(BaseScannerRegionObserver.REPLAY_WRITES)) != null);
-                    byte[] txRollbackAttribute = updateAttributes.get(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY);
-
-                    indexMutations = (new PhoenixTxnIndexMutationGenerator()).getIndexUpdates(table, index, mutationsPertainingToIndex,
-                            connection, getPhoenixTransactionContext(), txRollbackAttribute, replyWrite);
+                    if (! table.getName().equals("SYSTEM.CATALOG")) {
+                        System.out.println("Ohad: Mutation size: " + mutationsPertainingToIndex.size() + " table name: " + table.getName());
+                        System.out.flush();
+                    }
+                   if (! mutationsPertainingToIndex.isEmpty()) {
+                       indexMutations = (new PhoenixTxnIndexMutationGenerator()).getIndexUpdates(table, index, mutationsPertainingToIndex,
+                               connection, getPhoenixTransactionContext());
+                   } else {
+                       indexMutations = new ArrayList<Mutation>();
+                   }
 
                     // we may also have to include delete mutations for immutable tables if we are not processing all the tables in the mutations map
                     if (!sendAll) {
@@ -588,10 +589,11 @@ public class MutationState implements SQLCloseable {
             if (rowEntry.getValue().getColumnValues() == PRow.DELETE_MARKER) { // means delete
                 row.delete();
                 rowMutations = row.toRowMutations();
-                // Row deletes for index tables are processed by running a re-written query
-                // against the index table (as this allows for flexibility in being able to
-                // delete rows).
-                rowMutationsPertainingToIndex = Collections.emptyList();
+//                // Row deletes for index tables are processed by running a re-written query
+//                // against the index table (as this allows for flexibility in being able to
+//                // delete rows).
+//                rowMutationsPertainingToIndex = Collections.emptyList();
+                rowMutationsPertainingToIndex = rowMutations;
             } else {
                 for (Map.Entry<PColumn, byte[]> valueEntry : rowEntry.getValue().getColumnValues()
                         .entrySet()) {
