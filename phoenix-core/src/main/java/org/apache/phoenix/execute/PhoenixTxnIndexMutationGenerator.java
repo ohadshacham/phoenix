@@ -62,26 +62,12 @@ public class PhoenixTxnIndexMutationGenerator {
 
     private static final Log LOG = LogFactory.getLog(PhoenixTxnIndexMutationGenerator.class);
 
-    public static Iterator<Mutation> getMutationIterator(final MiniBatchOperationInProgress<Mutation> miniBatchOp) {
-        return new Iterator<Mutation>() {
-            private int i = 0;
-            
-            @Override
-            public boolean hasNext() {
-                return i < miniBatchOp.size();
-            }
+    private final PhoenixConnection connection;
+    private final PhoenixTransactionContext phoenixTransactionContext;
 
-            @Override
-            public Mutation next() {
-                return miniBatchOp.getOperation(i++);
-            }
-
-            @Override
-            public void remove() {
-                throw new UnsupportedOperationException();
-            }
-            
-        };
+    PhoenixTxnIndexMutationGenerator(PhoenixConnection connection, PhoenixTransactionContext phoenixTransactionContext) {
+        this.phoenixTransactionContext = phoenixTransactionContext;
+        this.connection = connection;
     }
 
     private static void addMutation(Map<ImmutableBytesPtr, MultiMutation> mutations, ImmutableBytesPtr row, Mutation m) {
@@ -94,12 +80,7 @@ public class PhoenixTxnIndexMutationGenerator {
         stored.addAll(m);
     }
 
-    public List<Mutation> getIndexUpdates(final PTable table, PTable index, List<Mutation> dataMutations,
-                                                              PhoenixConnection connection, PhoenixTransactionContext txnContext) throws IOException, SQLException {
-        if (txnContext == null) {
-            throw new NullPointerException("Expected to find transaction in metadata for " + table.getName().getString());
-        }
-
+    public List<Mutation> getIndexUpdates(final PTable table, PTable index, List<Mutation> dataMutations) throws IOException, SQLException {
         Map<String,byte[]> updateAttributes = dataMutations.get(0).getAttributesMap();
         boolean replyWrite = (BaseScannerRegionObserver.ReplayWrite.fromBytes(updateAttributes.get(BaseScannerRegionObserver.REPLAY_WRITES)) != null);
         byte[] txRollbackAttribute = updateAttributes.get(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY);
@@ -178,15 +159,15 @@ public class PhoenixTxnIndexMutationGenerator {
                 SkipScanFilter filter = scanRanges.getSkipScanFilter();
                 if (isRollback) {
                     filter = new SkipScanFilter(filter,true);
-                    txnContext.setVisibilityLevel(PhoenixVisibilityLevel.SNAPSHOT_ALL);
+                    phoenixTransactionContext.setVisibilityLevel(PhoenixVisibilityLevel.SNAPSHOT_ALL);
                 }
                 scan.setFilter(filter);
                 currentScanner = txTable.getScanner(scan);
             }
             if (isRollback) {
-                processRollback(maintainer, txRollbackAttribute, currentScanner, txnContext, mutableColumns, indexUpdates, mutations, replyWrite, table, connection);
+                processRollback(maintainer, txRollbackAttribute, currentScanner, mutableColumns, indexUpdates, mutations, replyWrite, table);
             } else {
-                processMutation(maintainer, txRollbackAttribute, currentScanner, txnContext, mutableColumns, indexUpdates, mutations, findPriorValueMutations, replyWrite, table, connection);
+                processMutation(maintainer, txRollbackAttribute, currentScanner, mutableColumns, indexUpdates, mutations, findPriorValueMutations, replyWrite, table);
             }
         } finally {
             if (txTable != null) txTable.close();
@@ -198,14 +179,12 @@ public class PhoenixTxnIndexMutationGenerator {
     private void processMutation(IndexMaintainer maintainer,
             byte[] txRollbackAttribute,
             ResultScanner scanner,
-            PhoenixTransactionContext txnContext, 
-            Set<ColumnReference> upsertColumns, 
+            Set<ColumnReference> upsertColumns,
             Collection<Mutation> indexUpdates,
             Map<ImmutableBytesPtr, MultiMutation> mutations,
             Map<ImmutableBytesPtr, MultiMutation> mutationsToFindPreviousValue,
             boolean replyWrite,
-            final PTable table,
-            PhoenixConnection connection) throws IOException, SQLException {
+            final PTable table) throws IOException, SQLException {
         if (scanner != null) {
             Result result;
             ColumnReference emptyColRef = new ColumnReference(maintainer
@@ -213,28 +192,27 @@ public class PhoenixTxnIndexMutationGenerator {
             // Process existing data table rows by removing the old index row and adding the new index row
             while ((result = scanner.next()) != null) {
                 Mutation m = mutationsToFindPreviousValue.remove(new ImmutableBytesPtr(result.getRow()));
-                TxTableState state = new TxTableState(upsertColumns, txnContext.getWritePointer(), m, emptyColRef, result);
-                generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table, connection);
-                generatePuts(indexUpdates, state, maintainer, replyWrite, table, connection);
+                TxTableState state = new TxTableState(upsertColumns, phoenixTransactionContext.getWritePointer(), m, emptyColRef, result);
+                generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table);
+                generatePuts(indexUpdates, state, maintainer, replyWrite, table);
             }
         }
         // Process new data table by adding new index rows
         for (Mutation m : mutations.values()) {
-            TxTableState state = new TxTableState(upsertColumns, txnContext.getWritePointer(), m);
-            generatePuts(indexUpdates, state, maintainer, replyWrite, table, connection);
-            generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table, connection);
+            TxTableState state = new TxTableState(upsertColumns, phoenixTransactionContext.getWritePointer(), m);
+            generatePuts(indexUpdates, state, maintainer, replyWrite, table);
+            generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table);
         }
     }
 
     private void processRollback(IndexMaintainer maintainer,
             byte[] txRollbackAttribute,
             ResultScanner scanner,
-            PhoenixTransactionContext tx, Set<ColumnReference> mutableColumns,
+            Set<ColumnReference> mutableColumns,
             Collection<Mutation> indexUpdates,
             Map<ImmutableBytesPtr, MultiMutation> mutations,
             boolean replyWrite,
-            final PTable table,
-            PhoenixConnection connection) throws IOException, SQLException {
+            final PTable table) throws IOException, SQLException {
         if (scanner != null) {
             Result result;
             // Loop through last committed row state plus all new rows associated with current transaction
@@ -264,7 +242,7 @@ public class PhoenixTxnIndexMutationGenerator {
                 int i = 0;
                 int nCells = cells.size();
                 Result oldResult = null, newResult;
-                long readPtr = tx.getReadPointer();
+                long readPtr = phoenixTransactionContext.getReadPointer();
                 do {
                     boolean hasPuts = false;
                     LinkedList<Cell> singleTimeCells = Lists.newLinkedList();
@@ -290,7 +268,7 @@ public class PhoenixTxnIndexMutationGenerator {
                     // want to delete the current row).
                     if (oldResult != null) {
                         TxTableState state = new TxTableState(mutableColumns, writePtr, m, emptyColRef, oldResult);
-                        generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table, connection);
+                        generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table);
                     }
                     // Generate point delete markers for the new index value.
                     // If our time batch doesn't have Puts (i.e. we have only Deletes), then do not
@@ -302,7 +280,7 @@ public class PhoenixTxnIndexMutationGenerator {
                         // First row may represent the current state which we don't want to delete
                         if (writePtr > readPtr) {
                             TxTableState state = new TxTableState(mutableColumns, writePtr, m, emptyColRef, newResult);
-                            generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table, connection);
+                            generateDeletes(indexUpdates, txRollbackAttribute, state, maintainer, replyWrite, table);
                         }
                         oldResult = newResult;
                     } else {
@@ -313,7 +291,7 @@ public class PhoenixTxnIndexMutationGenerator {
         }
     }
 
-    public Iterable<IndexUpdate> getIndexUpserts(TableState state, IndexMaintainer maintainer, boolean replyWrite, final PTable table, PhoenixConnection connection) throws IOException, SQLException {
+    private Iterable<IndexUpdate> getIndexUpserts(TableState state, IndexMaintainer maintainer, boolean replyWrite, final PTable table) throws IOException, SQLException {
         if (maintainer.isRowDeleted(state.getPendingUpdate())) {
             return Collections.emptyList();
         }
@@ -340,7 +318,7 @@ public class PhoenixTxnIndexMutationGenerator {
         return indexUpdates;
     }
 
-    public Iterable<IndexUpdate> getIndexDeletes(TableState state, IndexMaintainer maintainer, boolean replyWrite, final PTable table, PhoenixConnection connection) throws IOException, SQLException {
+    private Iterable<IndexUpdate> getIndexDeletes(TableState state, IndexMaintainer maintainer, boolean replyWrite, final PTable table) throws IOException, SQLException {
         ImmutableBytesWritable ptr = new ImmutableBytesWritable();
         ptr.set(state.getCurrentRowKey());
         List<IndexUpdate> indexUpdates = Lists.newArrayList();
@@ -377,9 +355,8 @@ public class PhoenixTxnIndexMutationGenerator {
             TxTableState state,
             IndexMaintainer maintainer,
             boolean replyWrite,
-            final PTable table,
-            PhoenixConnection connection) throws IOException, SQLException {
-        Iterable<IndexUpdate> deletes = getIndexDeletes(state, maintainer, replyWrite, table, connection);
+            final PTable table) throws IOException, SQLException {
+        Iterable<IndexUpdate> deletes = getIndexDeletes(state, maintainer, replyWrite, table);
         for (IndexUpdate delete : deletes) {
             if (delete.isValid()) {
                 delete.getUpdate().setAttribute(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY, attribValue);
@@ -392,10 +369,9 @@ public class PhoenixTxnIndexMutationGenerator {
             TxTableState state,
             IndexMaintainer maintainer,
             boolean replyWrite,
-            final PTable table,
-            PhoenixConnection connection) throws IOException, SQLException {
+            final PTable table) throws IOException, SQLException {
         state.applyMutation();
-        Iterable<IndexUpdate> puts = getIndexUpserts(state, maintainer, replyWrite, table, connection);
+        Iterable<IndexUpdate> puts = getIndexUpserts(state, maintainer, replyWrite, table);
         boolean validPut = false;
         for (IndexUpdate put : puts) {
             if (put.isValid()) {

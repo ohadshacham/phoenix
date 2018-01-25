@@ -128,6 +128,7 @@ public class MutationState implements SQLCloseable {
     private Map<TableRef, MultiRowMutationState> txMutations = Collections.emptyMap();
 
     final PhoenixTransactionContext phoenixTransactionContext;
+    final PhoenixTxnIndexMutationGenerator phoenixTxnIndexMutationGenerator;
 
     private final MutationMetricQueue mutationMetricQueue;
     private ReadMetricQueue readMetricQueue;
@@ -181,6 +182,8 @@ public class MutationState implements SQLCloseable {
             // as it is not thread safe, so we use the tx member variable
             phoenixTransactionContext = TransactionFactory.getTransactionFactory().getTransactionContext(txContext, connection, subTask);
         }
+
+        phoenixTxnIndexMutationGenerator = new PhoenixTxnIndexMutationGenerator(connection, phoenixTransactionContext);
     }
 
     public MutationState(TableRef table, MultiRowMutationState mutations, long sizeOffset, long maxSize, long maxSizeBytes, PhoenixConnection connection)  throws SQLException {
@@ -520,12 +523,23 @@ public class MutationState implements SQLCloseable {
                         System.out.println("Ohad: Mutation size: " + mutationsPertainingToIndex.size() + " table name: " + table.getName());
                         System.out.flush();
                     }
-                   if (! mutationsPertainingToIndex.isEmpty()) {
-                       indexMutations = (new PhoenixTxnIndexMutationGenerator()).getIndexUpdates(table, index, mutationsPertainingToIndex,
-                               connection, getPhoenixTransactionContext());
-                   } else {
-                       indexMutations = new ArrayList<Mutation>();
-                   }
+                    if (table.isImmutableRows() && (index.getIndexType() != IndexType.LOCAL)) {
+                        indexMutations =
+                    		IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
+                                connection.getKeyValueBuilder(), connection);
+                    } else {
+                        if (table.isTransactional() && !mutationsPertainingToIndex.isEmpty()) {
+                            indexMutations = phoenixTxnIndexMutationGenerator.getIndexUpdates(table, index, mutationsPertainingToIndex);
+                        } else {
+                            indexMutations = new ArrayList<Mutation>();
+                        }
+                    }
+
+//                    if ((table.isTransactional() || (table.isImmutableRows() && (index.getIndexType() != IndexType.LOCAL))) && !mutationsPertainingToIndex.isEmpty()) {
+//                        indexMutations = phoenixTxnIndexMutationGenerator.getIndexUpdates(table, index, mutationsPertainingToIndex);
+//                    } else {
+//                        indexMutations = new ArrayList<Mutation>();
+//                    }
 
                     // we may also have to include delete mutations for immutable tables if we are not processing all the tables in the mutations map
                     if (!sendAll) {

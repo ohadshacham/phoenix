@@ -1058,9 +1058,13 @@ public class PTableImpl implements PTable {
                 System.out.println("Ohad II: table " + name.toString() + " key " + Bytes.toString(key));
                 System.out.flush();
                 Delete delete = new Delete(key);
+            if (families.isEmpty()) {
+                delete.deleteFamily(SchemaUtil.getEmptyColumnFamily(PTableImpl.this), ts);
+            } else {
                 for (PColumnFamily colFamily : families) {
-                	delete.deleteFamily(colFamily.getName().getBytes(), ts);
+                    delete.deleteFamily(colFamily.getName().getBytes(), ts);
                 }
+            }
                 deleteRow = delete;
 //            }
             if (isWALDisabled()) {
