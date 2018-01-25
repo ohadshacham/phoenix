@@ -523,17 +523,33 @@ public class MutationState implements SQLCloseable {
                         System.out.println("Ohad: Mutation size: " + mutationsPertainingToIndex.size() + " table name: " + table.getName());
                         System.out.flush();
                     }
-                    if (table.isImmutableRows() && (index.getIndexType() != IndexType.LOCAL)) {
-                        indexMutations =
-                    		IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
-                                connection.getKeyValueBuilder(), connection);
-                    } else {
-                        if (table.isTransactional() && !mutationsPertainingToIndex.isEmpty()) {
-                            indexMutations = phoenixTxnIndexMutationGenerator.getIndexUpdates(table, index, mutationsPertainingToIndex);
+
+//                    if (table.isTransactional()) {
+                        if ((table.isImmutableRows() && (index.getIndexType() != IndexType.LOCAL)) || !table.isTransactional()) {
+                            indexMutations =
+                                    IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
+                                            connection.getKeyValueBuilder(), connection);
                         } else {
-                            indexMutations = new ArrayList<Mutation>();
+                            indexMutations = phoenixTxnIndexMutationGenerator.getIndexUpdates(table, index, mutationsPertainingToIndex);
                         }
-                    }
+
+//                    } else {
+//                        indexMutations =
+//                                IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
+//                                        connection.getKeyValueBuilder(), connection);
+//                    }
+
+//                    if (table.isImmutableRows()  && (index.getIndexType() != IndexType.LOCAL)) {
+//                        indexMutations =
+//                    		IndexUtil.generateIndexData(table, index, values, mutationsPertainingToIndex,
+//                                connection.getKeyValueBuilder(), connection);
+//                    } else {
+//                        if (table.isTransactional() && !mutationsPertainingToIndex.isEmpty()) {
+//                            indexMutations = phoenixTxnIndexMutationGenerator.getIndexUpdates(table, index, mutationsPertainingToIndex);
+//                        } else {
+//                            indexMutations = new ArrayList<Mutation>();
+//                        }
+//                    }
 
 //                    if ((table.isTransactional() || (table.isImmutableRows() && (index.getIndexType() != IndexType.LOCAL))) && !mutationsPertainingToIndex.isEmpty()) {
 //                        indexMutations = phoenixTxnIndexMutationGenerator.getIndexUpdates(table, index, mutationsPertainingToIndex);

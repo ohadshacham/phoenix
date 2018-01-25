@@ -81,6 +81,11 @@ public class PhoenixTxnIndexMutationGenerator {
     }
 
     public List<Mutation> getIndexUpdates(final PTable table, PTable index, List<Mutation> dataMutations) throws IOException, SQLException {
+
+        if (dataMutations.isEmpty()) {
+            return new ArrayList<Mutation>();
+        }
+
         Map<String,byte[]> updateAttributes = dataMutations.get(0).getAttributesMap();
         boolean replyWrite = (BaseScannerRegionObserver.ReplayWrite.fromBytes(updateAttributes.get(BaseScannerRegionObserver.REPLAY_WRITES)) != null);
         byte[] txRollbackAttribute = updateAttributes.get(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY);
