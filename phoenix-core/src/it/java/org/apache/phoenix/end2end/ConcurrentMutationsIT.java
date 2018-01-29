@@ -154,7 +154,7 @@ public class ConcurrentMutationsIT extends ParallelStatsDisabledIT {
     }
 
     @Test
-    public void testConcurrentDeletesAndUpsertValues() throws Exception {
+    public void testConcurrentDeletesAndUpserttestConcurrentDeletesAndUpsertValuesValues() throws Exception {
         final String tableName = generateUniqueName();
         final String indexName = generateUniqueName();
         Connection conn = DriverManager.getConnection(getUrl());
