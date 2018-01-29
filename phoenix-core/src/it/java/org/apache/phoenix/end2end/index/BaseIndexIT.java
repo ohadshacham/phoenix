@@ -274,7 +274,6 @@ public abstract class BaseIndexIT extends ParallelStatsDisabledIT {
             String ddl ="CREATE TABLE " + fullTableName + TestUtil.TEST_TABLE_SCHEMA + tableDDLOptions;
             Statement stmt1 = conn1.createStatement();
             stmt1.execute(ddl);
-
             BaseTest.populateTestTable(fullTableName);
 
             ResultSet rs;
