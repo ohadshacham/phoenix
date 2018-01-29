@@ -154,9 +154,9 @@ public class ConcurrentMutationsIT extends ParallelStatsDisabledIT {
     }
 
     @Test
-    public void testConcurrentDeletesAndUpserttestConcurrentDeletesAndUpsertValuesValues() throws Exception {
-        final String tableName = generateUniqueName();
-        final String indexName = generateUniqueName();
+    public void testConcurrentDeletesAndUpsertValues() throws Exception {
+            final String tableName = generateUniqueName();
+            final String indexName = generateUniqueName();
         Connection conn = DriverManager.getConnection(getUrl());
         conn.createStatement().execute("CREATE TABLE " + tableName + "(k1 INTEGER NOT NULL, k2 INTEGER NOT NULL, v1 INTEGER, CONSTRAINT pk PRIMARY KEY (k1,k2))");
         TestUtil.addCoprocessor(conn, tableName, DelayingRegionObserver.class);
