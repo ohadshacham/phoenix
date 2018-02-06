@@ -172,6 +172,12 @@ public interface PhoenixTransactionContext {
     public BaseRegionObserver getCoProcessor();
 
     /**
+     *
+     * @return the garbage collector
+     */
+    public BaseRegionObserver getGarbageCollector();
+
+    /**
      * 
      * @return the family delete marker
      */

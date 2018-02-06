@@ -345,22 +345,12 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public BaseRegionObserver getCoProcessor() {
-//        return null;
-//        return new OmidCompactor();
-//        TSOServerConfig tsoConfig = new TSOServerConfig();
-//        tsoConfig.setPort(1234);
-//        tsoConfig.setConflictMapSize(1000);
-//        tsoConfig.setTimestampType("WORLD_TIME");
-//        Injector injector = Guice.createInjector(new TSOMockModule(tsoConfig));
-//        tso = injector.getInstance(TSOServer.class);
-//
-//        commitTable = (InMemoryCommitTable) injector.getInstance(CommitTable.class);
-//        commitTableClient = commitTable.getClient();
-//        omidSnapshotFilter = new OmidSnapshotFilter(commitTableClient); //commitTableClient);
-        
-        
-        
         return new OmidSnapshotFilter(commitTableClient);
+    }
+
+    @Override
+    public BaseRegionObserver getGarbageCollector() {
+        return new OmidCompactor();
     }
 
     @Override

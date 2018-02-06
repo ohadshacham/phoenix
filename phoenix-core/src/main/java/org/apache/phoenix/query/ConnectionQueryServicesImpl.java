@@ -137,6 +137,7 @@ import org.apache.phoenix.coprocessor.MetaDataProtocol.MetaDataMutationResult;
 import org.apache.phoenix.coprocessor.MetaDataProtocol.MutationCode;
 import org.apache.phoenix.coprocessor.MetaDataRegionObserver;
 import org.apache.phoenix.coprocessor.PhoenixTransactionalProcessor;
+import org.apache.phoenix.coprocessor.PhoenixTransactionalGCProcessor;
 import org.apache.phoenix.coprocessor.ScanRegionObserver;
 import org.apache.phoenix.coprocessor.SequenceRegionObserver;
 import org.apache.phoenix.coprocessor.ServerCachingEndpointImpl;
@@ -909,10 +910,17 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 if (!descriptor.hasCoprocessor(PhoenixTransactionalProcessor.class.getName())) {
                     descriptor.addCoprocessor(PhoenixTransactionalProcessor.class.getName(), null, priority - 10, null);
                 }
+                if (!descriptor.hasCoprocessor(PhoenixTransactionalGCProcessor.class.getName()) &&
+                        (TransactionFactory.getTransactionFactory().getTransactionContext().getGarbageCollector() != null)) {
+                    descriptor.addCoprocessor(PhoenixTransactionalGCProcessor.class.getName(), null, priority - 10, null);
+                }
             } else {
                 // If exception on alter table to transition back to non transactional
                 if (descriptor.hasCoprocessor(PhoenixTransactionalProcessor.class.getName())) {
                     descriptor.removeCoprocessor(PhoenixTransactionalProcessor.class.getName());
+                }
+                if (descriptor.hasCoprocessor(PhoenixTransactionalGCProcessor.class.getName())) {
+                    descriptor.removeCoprocessor(PhoenixTransactionalGCProcessor.class.getName());
                 }
             }
         } catch (IOException e) {

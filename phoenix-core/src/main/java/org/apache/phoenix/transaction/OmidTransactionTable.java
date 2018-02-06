@@ -28,18 +28,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Append;
-import org.apache.hadoop.hbase.client.Delete;
-import org.apache.hadoop.hbase.client.Durability;
-import org.apache.hadoop.hbase.client.Get;
-import org.apache.hadoop.hbase.client.HTableInterface;
-import org.apache.hadoop.hbase.client.Increment;
-import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.client.ResultScanner;
-import org.apache.hadoop.hbase.client.Row;
-import org.apache.hadoop.hbase.client.RowMutations;
-import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Call;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Callback;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
@@ -263,20 +252,18 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
         List<Put> putList = new ArrayList<Put>();
 
-       for (Row put : actions) {
-           System.out.println("Batch transaction " + tx.getTransactionId() + " " + Bytes.toString(put.getRow()) + " table: " + Bytes.toString(tTable.getTableName()));
+       for (Row row : actions) {
+           System.out.println("Batch transaction " + tx.getTransactionId() + " " + Bytes.toString(row.getRow()) + " table: " + Bytes.toString(tTable.getTableName()));
            System.out.flush();
-//               this.put((Put) put);
 
-
-           if (((Put)put).getAttribute(PhoenixIndexCodec.INDEX_UUID) != null) {
-               System.out.println("Has index attribute " + Bytes.toString(put.getRow()));
-               System.out.flush();
+           if (row instanceof Put) {
+               putList.add((Put) row);
+           } else {
+               // TODO implement delete batch
+               assert (row instanceof Delete);
+               this.delete((Delete) row);
            }
-
-           putList.add((Put) put);
        }
-
 
        this.put(putList);
 
@@ -472,24 +459,31 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public int getReadRpcTimeout() {
-      // TODO Auto-generated method stub
+      assert(false);
+
+        // TODO Auto-generated method stub
       return 0;
     }
 
     @Override
     public void setReadRpcTimeout(int readRpcTimeout) {
+      assert(false);
+
       // TODO Auto-generated method stub
-      
     }
 
     @Override
     public int getWriteRpcTimeout() {
+      assert(false);
+
       // TODO Auto-generated method stub
       return 0;
     }
 
     @Override
     public void setWriteRpcTimeout(int writeRpcTimeout) {
+      assert(false);
+
       // TODO Auto-generated method stub
       
     }

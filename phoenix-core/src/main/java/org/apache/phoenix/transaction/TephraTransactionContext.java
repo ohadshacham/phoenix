@@ -434,6 +434,9 @@ public class TephraTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
+    public BaseRegionObserver getGarbageCollector() { return null; }
+
+    @Override
     public byte[] getFamilyDeleteMarker() {
         return TxConstants.FAMILY_DELETE_QUALIFIER;
     }
