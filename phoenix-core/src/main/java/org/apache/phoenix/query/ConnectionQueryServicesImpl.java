@@ -2545,16 +2545,15 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
         }
     }
 
-    void createSysMutexTable(HBaseAdmin admin, ReadOnlyProps props) throws IOException, SQLException {
+    void createSysMutexTableIfNotExists(HBaseAdmin admin, ReadOnlyProps props) throws IOException, SQLException {
         try {
-            final TableName mutexTableName = SchemaUtil.getPhysicalTableName(
-                PhoenixDatabaseMetaData.SYSTEM_MUTEX_NAME, props);
-            List<TableName> systemTables = getSystemTableNames(admin);
-            if (systemTables.contains(mutexTableName) || admin.tableExists( TableName.valueOf(
-                PhoenixDatabaseMetaData.SYSTEM_SCHEMA_NAME,PhoenixDatabaseMetaData.SYSTEM_MUTEX_TABLE_NAME))) {
+            if(admin.tableExists(PhoenixDatabaseMetaData.SYSTEM_MUTEX_NAME) || admin.tableExists(TableName.valueOf(
+                    PhoenixDatabaseMetaData.SYSTEM_SCHEMA_NAME,PhoenixDatabaseMetaData.SYSTEM_MUTEX_TABLE_NAME))) {
                 logger.debug("System mutex table already appears to exist, not creating it");
                 return;
             }
+            final TableName mutexTableName = SchemaUtil.getPhysicalTableName(
+                PhoenixDatabaseMetaData.SYSTEM_MUTEX_NAME, props);
             HTableDescriptor tableDesc = new HTableDescriptor(mutexTableName);
             HColumnDescriptor columnDesc = new HColumnDescriptor(
                     PhoenixDatabaseMetaData.SYSTEM_MUTEX_FAMILY_NAME_BYTES);
@@ -2568,8 +2567,13 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 put.add(PhoenixDatabaseMetaData.SYSTEM_MUTEX_FAMILY_NAME_BYTES, UPGRADE_MUTEX, UPGRADE_MUTEX_UNLOCKED);
                 sysMutexTable.put(put);
             }
-        } catch (TableExistsException | AccessDeniedException e) {
-            // Ignore
+        } catch (IOException e) {
+            if(!Iterables.isEmpty(Iterables.filter(Throwables.getCausalChain(e), AccessDeniedException.class)) ||
+                    !Iterables.isEmpty(Iterables.filter(Throwables.getCausalChain(e), org.apache.hadoop.hbase.TableNotFoundException.class))) {
+                // Ignore
+            } else {
+                throw e;
+            }
         }catch(PhoenixIOException e){
             if(e.getCause()!=null && e.getCause() instanceof AccessDeniedException)
             {
@@ -2580,7 +2584,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
         }
     }
 
-    List<TableName> getSystemTableNames(HBaseAdmin admin) throws IOException {
+    List<TableName> getSystemTableNamesInDefaultNamespace(HBaseAdmin admin) throws IOException {
         return Lists.newArrayList(admin.listTableNames(QueryConstants.SYSTEM_SCHEMA_NAME + "\\..*"));
     }
 
@@ -2599,7 +2603,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
 
         // Catch the IOException to log the error message and then bubble it up for the client to retry.
         try {
-            createSysMutexTable(hbaseAdmin, ConnectionQueryServicesImpl.this.getProps());
+            createSysMutexTableIfNotExists(hbaseAdmin, ConnectionQueryServicesImpl.this.getProps());
         } catch (IOException exception) {
             logger.error("Failed to created SYSMUTEX table. Upgrade or migration is not possible without it. Please retry.");
             throw exception;
@@ -2642,11 +2646,23 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
             } catch (TableAlreadyExistsException e) {
                 long currentServerSideTableTimeStamp = e.getTable().getTimeStamp();
                 sysCatalogTableName = e.getTable().getPhysicalName().getString();
-                if (currentServerSideTableTimeStamp < MIN_SYSTEM_TABLE_TIMESTAMP
-                        && (acquiredMutexLock = acquireUpgradeMutex(currentServerSideTableTimeStamp, mutexRowKey))) {
-                    snapshotName = getSysCatalogSnapshotName(currentServerSideTableTimeStamp);
-                    createSnapshot(snapshotName, sysCatalogTableName);
-                    snapshotCreated = true;
+                if (currentServerSideTableTimeStamp < MIN_SYSTEM_TABLE_TIMESTAMP) {
+                    // Ensure that the SYSTEM.MUTEX table has been created prior
+                    // to attempting to acquire the upgrade mutex. If namespace
+                    // mapping is enabled, we've already done this earlier in the
+                    // upgrade, so no need for a bunch of wasted RPCs.
+                    if (currentServerSideTableTimeStamp <= MetaDataProtocol.MIN_SYSTEM_TABLE_TIMESTAMP_4_10_0 &&
+                            !SchemaUtil.isNamespaceMappingEnabled(PTableType.SYSTEM,
+                                    ConnectionQueryServicesImpl.this.getProps())) {
+                        try (HBaseAdmin admin = getAdmin()) {
+                            createSysMutexTableIfNotExists(admin, this.getProps());
+                        }
+                    }
+                    if (acquiredMutexLock = acquireUpgradeMutex(currentServerSideTableTimeStamp, mutexRowKey)) {
+                        snapshotName = getSysCatalogSnapshotName(currentServerSideTableTimeStamp);
+                        createSnapshot(snapshotName, sysCatalogTableName);
+                        snapshotCreated = true;
+                    }
                 }
                 String columnsToAdd = "";
                 // This will occur if we have an older SYSTEM.CATALOG and we need to update it to
@@ -3182,7 +3198,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                 // below. If the NS does exist and is mapped, the below check will exit gracefully.
             }
 
-            List<TableName> tableNames = getSystemTableNames(admin);
+            List<TableName> tableNames = getSystemTableNamesInDefaultNamespace(admin);
             // No tables exist matching "SYSTEM\..*", they are all already in "SYSTEM:.*"
             if (tableNames.size() == 0) { return; }
             // Try to move any remaining tables matching "SYSTEM\..*" into "SYSTEM:"
@@ -3193,6 +3209,8 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
             // Try acquiring a lock in SYSMUTEX table before migrating the tables since it involves disabling the table
             // If we cannot acquire lock, it means some old client is either migrating SYSCAT or trying to upgrade the
             // schema of SYSCAT table and hence it should not be interrupted
+            // Create mutex if not already created
+            createSysMutexTableIfNotExists(admin, props);
             acquiredMutexLock = acquireUpgradeMutex(MetaDataProtocol.MIN_SYSTEM_TABLE_MIGRATION_TIMESTAMP, mutexRowKey);
             if(acquiredMutexLock) {
                 logger.debug("Acquired lock in SYSMUTEX table for migrating SYSTEM tables to SYSTEM namespace");
