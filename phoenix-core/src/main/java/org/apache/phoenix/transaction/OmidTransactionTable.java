@@ -18,28 +18,30 @@
 package org.apache.phoenix.transaction;
 
 import java.io.IOException;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
-import org.apache.hadoop.hbase.client.Append;
-import org.apache.hadoop.hbase.client.Delete;
-import org.apache.hadoop.hbase.client.Durability;
-import org.apache.hadoop.hbase.client.Get;
-import org.apache.hadoop.hbase.client.HTableInterface;
-import org.apache.hadoop.hbase.client.Increment;
-import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.client.Result;
-import org.apache.hadoop.hbase.client.ResultScanner;
-import org.apache.hadoop.hbase.client.Row;
-import org.apache.hadoop.hbase.client.RowMutations;
-import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Call;
 import org.apache.hadoop.hbase.client.coprocessor.Batch.Callback;
 import org.apache.hadoop.hbase.filter.CompareFilter.CompareOp;
 import org.apache.hadoop.hbase.ipc.CoprocessorRpcChannel;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.hdfs.server.namenode.UnsupportedActionException;
+import org.apache.omid.transaction.TTable;
+import org.apache.omid.transaction.Transaction;
+import org.apache.phoenix.exception.SQLExceptionCode;
+import org.apache.phoenix.exception.SQLExceptionInfo;
+import org.apache.phoenix.index.PhoenixIndexCodec;
+import org.apache.phoenix.schema.PTableType;
+import org.apache.phoenix.schema.PTable;
 
 import com.google.protobuf.Descriptors.MethodDescriptor;
 import com.google.protobuf.Message;
@@ -48,117 +50,147 @@ import com.google.protobuf.ServiceException;
 
 public class OmidTransactionTable implements PhoenixTransactionalTable {
 
-    public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) {
-        // TODO Auto-generated constructor stub
+    private TTable tTable;
+    private Transaction tx;
+    
+    public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) throws SQLException {
+        this(ctx, hTable, null);
+    }
+
+    public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable, PTable pTable) throws SQLException  {
+        assert(ctx instanceof OmidTransactionContext);
+
+        OmidTransactionContext omidTransactionContext = (OmidTransactionContext) ctx;
+
+        try {
+            tTable = new TTable(hTable, true);
+        } catch (IOException e) {
+            throw new SQLExceptionInfo.Builder(
+                    SQLExceptionCode.TRANSACTION_FAILED)
+            .setMessage(e.getMessage()).setRootCause(e).build()
+            .buildException();
+        }
+
+        this.tx = omidTransactionContext.getTransaction();
+
+        if (pTable != null && pTable.getType() != PTableType.INDEX) {
+            omidTransactionContext.markDMLFence(pTable);
+        }
     }
 
     @Override
     public Result get(Get get) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.get(tx, get);
     }
 
     @Override
     public void put(Put put) throws IOException {
-        // TODO Auto-generated method stub
+        System.out.println("OHAD Start printing");
+        Map<byte[],?> map = put.getFamilyCellMap();
+        for (Map.Entry<byte[], ?> entry : map.entrySet())
+        {
+            System.out.println("OHAD " + Arrays.toString(entry.getKey()));
+        }
 
+        tTable.put(tx, put);
     }
 
     @Override
     public void delete(Delete delete) throws IOException {
-        // TODO Auto-generated method stub
-
+        tTable.delete(tx, delete);
     }
 
     @Override
     public ResultScanner getScanner(Scan scan) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
+        System.out.flush();
+        scan.setTimeRange(0, Long.MAX_VALUE);
+        return tTable.getScanner(tx, scan);
     }
 
     @Override
     public byte[] getTableName() {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getTableName();
     }
 
     @Override
     public Configuration getConfiguration() {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getConfiguration();
     }
 
     @Override
     public HTableDescriptor getTableDescriptor() throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.getTableDescriptor();
     }
 
     @Override
     public boolean exists(Get get) throws IOException {
-        // TODO Auto-generated method stub
-        return false;
+       return tTable.exists(tx, get);
     }
 
     @Override
     public Result[] get(List<Get> gets) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        return tTable.get(tx, gets);
     }
 
     @Override
     public ResultScanner getScanner(byte[] family) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
+        System.out.flush();
+        return tTable.getScanner(tx, family);
     }
 
     @Override
     public ResultScanner getScanner(byte[] family, byte[] qualifier)
             throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
+        System.out.flush();
+        return tTable.getScanner(tx, family, qualifier);
     }
 
     @Override
     public void put(List<Put> puts) throws IOException {
-        // TODO Auto-generated method stub
+        try {
+            tTable.put(tx, puts);
+        } catch (InterruptedException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+        }
     }
 
     @Override
     public void delete(List<Delete> deletes) throws IOException {
-        // TODO Auto-generated method stub
+        tTable.delete(tx, deletes);
     }
 
     @Override
     public void setAutoFlush(boolean autoFlush) {
-        // TODO Auto-generated method stub
+        tTable.setAutoFlush(autoFlush);
     }
 
     @Override
     public boolean isAutoFlush() {
-        // TODO Auto-generated method stub
-        return false;
+        return tTable.isAutoFlush();
     }
 
     @Override
     public long getWriteBufferSize() {
-        // TODO Auto-generated method stub
-        return 0;
+        return tTable.getWriteBufferSize();
     }
 
     @Override
     public void setWriteBufferSize(long writeBufferSize) throws IOException {
-        // TODO Auto-generated method stub
+        tTable.setWriteBufferSize(writeBufferSize);
     }
 
     @Override
     public void flushCommits() throws IOException {
-        // TODO Auto-generated method stub
+        tTable.flushCommits();
     }
 
     @Override
     public void close() throws IOException {
-        // TODO Auto-generated method stub
+        tTable.close();
     }
 
     @Override
@@ -171,8 +203,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public Boolean[] exists(List<Get> gets) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+            // TODO Auto-generated method stub
+            return null;
     }
 
     @Override
@@ -182,50 +214,76 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public void setAutoFlushTo(boolean autoFlush) {
-        // TODO Auto-generated method stub
+        tTable.setAutoFlush(autoFlush);
     }
 
     @Override
     public Result getRowOrBefore(byte[] row, byte[] family) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        throw new UnsupportedActionException("Function getRowOrBefore is not supported");
+//        return null;
     }
 
     @Override
     public TableName getName() {
+        assert(false);
         // TODO Auto-generated method stub
         return null;
     }
 
     @Override
     public boolean[] existsAll(List<Get> gets) throws IOException {
-        // TODO Auto-generated method stub
-        return null;
+        throw new UnsupportedActionException("Function existsAll is not supported");
     }
 
     @Override
     public void batch(List<? extends Row> actions, Object[] results)
             throws IOException, InterruptedException {
+        assert(false);
+
         // TODO Auto-generated method stub
     }
 
     @Override
     public Object[] batch(List<? extends Row> actions) throws IOException,
             InterruptedException {
-        // TODO Auto-generated method stub
-        return null;
+
+        System.out.println("Batch transaction " + tx.getTransactionId() + " write pointer " + tx.getWriteTimestamp() + " size " + actions.size() + " table: " + Bytes.toString(tTable.getTableName()));
+        System.out.flush();
+
+        List<Put> putList = new ArrayList<Put>();
+
+       for (Row row : actions) {
+           System.out.println("Batch transaction " + tx.getTransactionId() + " " + Bytes.toString(row.getRow()) + " table: " + Bytes.toString(tTable.getTableName()));
+           System.out.flush();
+
+           if (row instanceof Put) {
+               putList.add((Put) row);
+           } else {
+               // TODO implement delete batch
+               assert (row instanceof Delete);
+               this.delete((Delete) row);
+           }
+       }
+
+       this.put(putList);
+
+       return null;
     }
 
     @Override
     public <R> void batchCallback(List<? extends Row> actions,
             Object[] results, Callback<R> callback) throws IOException,
             InterruptedException {
+        assert(false);
+
         // TODO Auto-generated method stub
     }
 
     @Override
     public <R> Object[] batchCallback(List<? extends Row> actions,
             Callback<R> callback) throws IOException, InterruptedException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return null;
     }
@@ -233,6 +291,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public boolean checkAndPut(byte[] row, byte[] family, byte[] qualifier,
             byte[] value, Put put) throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return false;
     }
@@ -240,6 +300,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public boolean checkAndPut(byte[] row, byte[] family, byte[] qualifier,
             CompareOp compareOp, byte[] value, Put put) throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return false;
     }
@@ -248,6 +310,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier,
             byte[] value, Delete delete) throws IOException {
         // TODO Auto-generated method stub
+        assert(false);
+
         return false;
     }
 
@@ -255,23 +319,31 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public boolean checkAndDelete(byte[] row, byte[] family, byte[] qualifier,
             CompareOp compareOp, byte[] value, Delete delete)
             throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return false;
     }
 
     @Override
     public void mutateRow(RowMutations rm) throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
     }
 
     @Override
     public Result append(Append append) throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return null;
     }
 
     @Override
     public Result increment(Increment increment) throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return null;
     }
@@ -279,6 +351,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public long incrementColumnValue(byte[] row, byte[] family,
             byte[] qualifier, long amount) throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return 0;
     }
@@ -287,12 +361,16 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public long incrementColumnValue(byte[] row, byte[] family,
             byte[] qualifier, long amount, Durability durability)
             throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return 0;
     }
 
     @Override
     public CoprocessorRpcChannel coprocessorService(byte[] row) {
+        assert(false);
+
         // TODO Auto-generated method stub
         return null;
     }
@@ -301,6 +379,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public <T extends Service, R> Map<byte[], R> coprocessorService(
             Class<T> service, byte[] startKey, byte[] endKey,
             Call<T, R> callable) throws ServiceException, Throwable {
+        assert(false);
+
         // TODO Auto-generated method stub
         return null;
     }
@@ -309,6 +389,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public <T extends Service, R> void coprocessorService(Class<T> service,
             byte[] startKey, byte[] endKey, Call<T, R> callable,
             Callback<R> callback) throws ServiceException, Throwable {
+        assert(false);
+
         // TODO Auto-generated method stub
     }
 
@@ -317,6 +399,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
             MethodDescriptor methodDescriptor, Message request,
             byte[] startKey, byte[] endKey, R responsePrototype)
             throws ServiceException, Throwable {
+        assert(false);
+
         // TODO Auto-generated method stub
         return null;
     }
@@ -326,6 +410,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
             MethodDescriptor methodDescriptor, Message request,
             byte[] startKey, byte[] endKey, R responsePrototype,
             Callback<R> callback) throws ServiceException, Throwable {
+        assert(false);
+
         // TODO Auto-generated method stub
     }
 
@@ -333,54 +419,71 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     public boolean checkAndMutate(byte[] row, byte[] family, byte[] qualifier,
             CompareOp compareOp, byte[] value, RowMutations mutation)
             throws IOException {
+        assert(false);
+
         // TODO Auto-generated method stub
         return false;
     }
 
     @Override
     public int getOperationTimeout() {
+        assert(false);
+
         // TODO Auto-generated method stub
         return 0;
     }
 
     @Override
     public int getRpcTimeout() {
+        assert(false);
+
         // TODO Auto-generated method stub
         return 0;
     }
 
     @Override
     public void setOperationTimeout(int arg0) {
+        assert(false);
+
         // TODO Auto-generated method stub
         
     }
 
     @Override
     public void setRpcTimeout(int arg0) {
+        assert(false);
+
         // TODO Auto-generated method stub
         
     }
 
     @Override
     public int getReadRpcTimeout() {
-      // TODO Auto-generated method stub
+      assert(false);
+
+        // TODO Auto-generated method stub
       return 0;
     }
 
     @Override
     public void setReadRpcTimeout(int readRpcTimeout) {
+      assert(false);
+
       // TODO Auto-generated method stub
-      
     }
 
     @Override
     public int getWriteRpcTimeout() {
+      assert(false);
+
       // TODO Auto-generated method stub
       return 0;
     }
 
     @Override
     public void setWriteRpcTimeout(int writeRpcTimeout) {
+      assert(false);
+
       // TODO Auto-generated method stub
       
     }
