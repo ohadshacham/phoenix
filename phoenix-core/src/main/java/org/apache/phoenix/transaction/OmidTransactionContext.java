@@ -95,7 +95,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         if (txnBytes != null && txnBytes.length > 0) {
             TSOProto.Transaction transaction = TSOProto.Transaction.parseFrom(txnBytes);
-            tx = new HBaseTransaction(transaction.getTimestamp(), transaction.getEpoch(), new HashSet<HBaseCellId>(), transactionManager);
+            tx = new HBaseTransaction(transaction.getTimestamp(), transaction.getEpoch(), new HashSet<HBaseCellId>(), new HashSet<HBaseCellId>(), transactionManager);
 //            tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), null);
         } else {
             tx = null;
@@ -114,7 +114,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         if (subTask) {
             if (omidTransactionContext.isTransactionRunning()) {
                 Transaction transaction = omidTransactionContext.getTransaction();
-                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), transactionManager, transaction.getReadTimestamp(), transaction.getWriteTimestamp());
+                this.tx = new HBaseTransaction(transaction.getTransactionId(), transaction.getEpoch(), new HashSet<HBaseCellId>(), new HashSet<HBaseCellId>(), transactionManager, transaction.getReadTimestamp(), transaction.getWriteTimestamp());
             } else {
                 this.tx = null;
             }
