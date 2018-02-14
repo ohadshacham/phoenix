@@ -52,7 +52,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     private TTable tTable;
     private Transaction tx;
-    
+    private boolean conflictFree;
+
     public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) throws SQLException {
         this(ctx, hTable, null);
     }
@@ -76,6 +77,8 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
         if (pTable != null && pTable.getType() != PTableType.INDEX) {
             omidTransactionContext.markDMLFence(pTable);
         }
+
+        this.conflictFree = (pTable != null && pTable.isImmutableRows());
     }
 
     @Override
@@ -257,7 +260,11 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
            System.out.flush();
 
            if (row instanceof Put) {
-               putList.add((Put) row);
+               Put put = (Put) row;
+               if (conflictFree) {
+                   tTable.markPutAsConflictFreeMutation(put);
+               }
+               putList.add(put);
            } else {
                // TODO implement delete batch
                assert (row instanceof Delete);
