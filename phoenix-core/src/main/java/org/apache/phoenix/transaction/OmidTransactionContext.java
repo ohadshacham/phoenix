@@ -83,11 +83,13 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     public OmidTransactionContext() {
         this.tx = null;
         this.tm = null;
+        this.tso = null;
     }
 
     public OmidTransactionContext(PhoenixConnection connection) {
         this.tm = transactionManager;
         this.tx = null;
+        this.tso = null;
     }
 
     public OmidTransactionContext(byte[] txnBytes) throws InvalidProtocolBufferException {
@@ -123,6 +125,8 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         } else {
             this.tx = omidTransactionContext.getTransaction();
         }
+
+        this.tso = null;
     }
 
     @Override
@@ -464,8 +468,12 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     @Override
     public void tearDownTxManager() throws SQLException {
         try {
-            transactionManager.close();
-            tso.stopAndWait();
+            if (transactionManager != null) {
+                transactionManager.close();
+            }
+            if (tso != null) {
+                tso.stopAndWait();
+            }
         } catch (IOException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
