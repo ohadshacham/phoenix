@@ -75,6 +75,7 @@ import org.apache.phoenix.hbase.index.util.ImmutableBytesPtr;
 import org.apache.phoenix.hbase.index.write.IndexWriter;
 import org.apache.phoenix.hbase.index.write.LeaveIndexActiveFailurePolicy;
 import org.apache.phoenix.hbase.index.write.ParallelWriterIndexCommitter;
+import org.apache.phoenix.jdbc.PhoenixDatabaseMetaData;
 import org.apache.phoenix.query.KeyRange;
 import org.apache.phoenix.schema.types.PVarbinary;
 import org.apache.phoenix.trace.TracingUtils;
@@ -196,6 +197,10 @@ public class PhoenixTransactionalIndexer extends BaseRegionObserver {
         
         Map<String,byte[]> updateAttributes = m.getAttributesMap();
         PhoenixIndexMetaData indexMetaData = new PhoenixIndexMetaData(c.getEnvironment(),updateAttributes);
+        if (indexMetaData.getClientVersion() >= PhoenixDatabaseMetaData.MIN_TX_CLIENT_SIDE_MAINTENANCE) {
+            super.preBatchMutate(c, miniBatchOp);
+            return;
+        }
         byte[] txRollbackAttribute = m.getAttribute(PhoenixTransactionContext.TX_ROLLBACK_ATTRIBUTE_KEY);
         Collection<Pair<Mutation, byte[]>> indexUpdates = null;
         // get the current span, or just use a null-span to avoid a bunch of if statements
@@ -560,10 +565,6 @@ public class PhoenixTransactionalIndexer extends BaseRegionObserver {
             return currentTimestamp;
         }
 
-        @Override
-        public Map<String, byte[]> getUpdateAttributes() {
-            return attributes;
-        }
 
         @Override
         public byte[] getCurrentRowKey() {
