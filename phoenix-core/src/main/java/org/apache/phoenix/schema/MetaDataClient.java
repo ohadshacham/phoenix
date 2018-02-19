@@ -113,7 +113,6 @@ import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Collection;
 import java.util.Collections;
@@ -134,7 +133,6 @@ import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.client.ClusterConnection;
 import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HBaseAdmin;
-import org.apache.hadoop.hbase.client.HConnection;
 import org.apache.hadoop.hbase.client.Mutation;
 import org.apache.hadoop.hbase.client.Put;
 import org.apache.hadoop.hbase.client.Scan;
@@ -932,7 +930,8 @@ public class MetaDataClient {
         argUpsert.execute();
     }
 
-    private PColumn newColumn(int position, ColumnDef def, PrimaryKeyConstraint pkConstraint, String defaultColumnFamily, boolean addingToPK, byte[] columnQualifierBytes) throws SQLException {
+    private PColumn newColumn(int position, ColumnDef def, PrimaryKeyConstraint pkConstraint, String defaultColumnFamily,
+            boolean addingToPK, byte[] columnQualifierBytes, boolean isImmutableRows) throws SQLException {
         try {
             ColumnName columnDefName = def.getColumnDefName();
             SortOrder sortOrder = def.getSortOrder();
@@ -964,7 +963,7 @@ public class MetaDataClient {
                 if (isPK) {
                     throw new SQLExceptionInfo.Builder(SQLExceptionCode.PRIMARY_KEY_WITH_FAMILY_NAME)
                     .setColumnName(columnName).setFamilyName(family).build().buildException();
-                } else if (!def.isNull()) {
+                } else if (!def.isNull() && !isImmutableRows) {
                     throw new SQLExceptionInfo.Builder(SQLExceptionCode.KEY_VALUE_NOT_NULL)
                     .setColumnName(columnName).setFamilyName(family).build().buildException();
                 }
@@ -2180,7 +2179,6 @@ public class MetaDataClient {
             }
 
             Map<String, PName> familyNames = Maps.newLinkedHashMap();
-            boolean isPK = false;
             boolean rowTimeStampColumnAlreadyFound = false;
             int positionOffset = columns.size();
             if (saltBucketNum != null) {
@@ -2223,27 +2221,8 @@ public class MetaDataClient {
                  * partitioned by the virtue of indexId present in the row key. As such, different shared indexes can use
                  * potentially overlapping column qualifiers.
                  * 
-                 * If the hbase table already exists, then possibly encoded or non-encoded column qualifiers were used. 
-                 * In this case we pursue ahead with non-encoded column qualifier scheme. If the phoenix metadata for this table already exists 
-                 * then we rely on the PTable, with appropriate storage scheme, returned in the MetadataMutationResult to be updated 
-                 * in the client cache. If the phoenix table metadata already doesn't exist then the non-encoded column qualifier scheme works
-                 * because we cannot control the column qualifiers that were used when populating the hbase table.
                  */
-                
-                byte[] tableNameBytes = SchemaUtil.getTableNameAsBytes(schemaName, tableName);
-                boolean tableExists = true;
-                try {
-                    HTableDescriptor tableDescriptor = connection.getQueryServices().getTableDescriptor(tableNameBytes);
-                    if (tableDescriptor == null) { // for connectionless
-                        tableExists = false;
-                    }
-                } catch (org.apache.phoenix.schema.TableNotFoundException e) {
-                    tableExists = false;
-                }
-                if (tableExists) {
-                    encodingScheme = NON_ENCODED_QUALIFIERS;
-                    immutableStorageScheme = ONE_CELL_PER_COLUMN;
-                } else if (parent != null) {
+                if (parent != null) {
                     encodingScheme = parent.getEncodingScheme();
                     immutableStorageScheme = parent.getImmutableStorageScheme();
                 } else {
@@ -2290,19 +2269,20 @@ public class MetaDataClient {
             }
 
             Map<String, Integer> changedCqCounters = new HashMap<>(colDefs.size());
+            boolean wasPKDefined = false;
             for (ColumnDef colDef : colDefs) {
                 rowTimeStampColumnAlreadyFound = checkAndValidateRowTimestampCol(colDef, pkConstraint, rowTimeStampColumnAlreadyFound, tableType);
                 if (colDef.isPK()) { // i.e. the column is declared as CREATE TABLE COLNAME DATATYPE PRIMARY KEY...
-                    if (isPK) {
+                    if (wasPKDefined) {
                         throw new SQLExceptionInfo.Builder(SQLExceptionCode.PRIMARY_KEY_ALREADY_EXISTS)
                             .setColumnName(colDef.getColumnDefName().getColumnName()).build().buildException();
                     }
-                    isPK = true;
+                    wasPKDefined = true;
                 } else {
                     // do not allow setting NOT-NULL constraint on non-primary columns.
-                    if (  Boolean.FALSE.equals(colDef.isNull()) &&
-                        ( isPK || ( pkConstraint != null && !pkConstraint.contains(colDef.getColumnDefName())))) {
-                            throw new SQLExceptionInfo.Builder(SQLExceptionCode.INVALID_NOT_NULL_CONSTRAINT)
+                    if (  !colDef.isNull() && !isImmutableRows &&
+                        ( wasPKDefined || !isPkColumn(pkConstraint, colDef))) {
+                            throw new SQLExceptionInfo.Builder(SQLExceptionCode.KEY_VALUE_NOT_NULL)
                                 .setSchemaName(schemaName)
                                 .setTableName(tableName)
                                 .setColumnName(colDef.getColumnDefName().getColumnName()).build().buildException();
@@ -2310,7 +2290,7 @@ public class MetaDataClient {
                 }
                 ColumnName columnDefName = colDef.getColumnDefName();
                 String colDefFamily = columnDefName.getFamilyName();
-                boolean isPkColumn = isPkColumn(pkConstraint, colDef, columnDefName);
+                boolean isPkColumn = isPkColumn(pkConstraint, colDef);
                 String cqCounterFamily = null;
                 if (!isPkColumn) {
                     if (immutableStorageScheme == SINGLE_CELL_ARRAY_WITH_OFFSETS && encodingScheme != NON_ENCODED_QUALIFIERS) {
@@ -2331,7 +2311,7 @@ public class MetaDataClient {
                     .setSchemaName(schemaName)
                     .setTableName(tableName).build().buildException();
                 }
-                PColumn column = newColumn(position++, colDef, pkConstraint, defaultFamilyName, false, columnQualifierBytes);
+                PColumn column = newColumn(position++, colDef, pkConstraint, defaultFamilyName, false, columnQualifierBytes, isImmutableRows);
                 if (cqCounter.increment(cqCounterFamily)) {
                     changedCqCounters.put(cqCounterFamily, cqCounter.getNextQualifier(cqCounterFamily));
                 }
@@ -2371,7 +2351,7 @@ public class MetaDataClient {
             }
             
             // We need a PK definition for a TABLE or mapped VIEW
-            if (!isPK && pkColumnsNames.isEmpty() && tableType != PTableType.VIEW && viewType != ViewType.MAPPED) {
+            if (!wasPKDefined && pkColumnsNames.isEmpty() && tableType != PTableType.VIEW && viewType != ViewType.MAPPED) {
                 throw new SQLExceptionInfo.Builder(SQLExceptionCode.PRIMARY_KEY_MISSING)
                     .setSchemaName(schemaName)
                     .setTableName(tableName)
@@ -2733,8 +2713,8 @@ public class MetaDataClient {
         }
     }
 
-    private static boolean isPkColumn(PrimaryKeyConstraint pkConstraint, ColumnDef colDef, ColumnName columnDefName) {
-        return colDef.isPK() || (pkConstraint != null && pkConstraint.getColumnWithSortOrder(columnDefName) != null);
+    private static boolean isPkColumn(PrimaryKeyConstraint pkConstraint, ColumnDef colDef) {
+        return colDef.isPK() || (pkConstraint != null && pkConstraint.contains(colDef.getColumnDefName()));
     }
     
     /**
@@ -3226,6 +3206,8 @@ public class MetaDataClient {
 
                 MetaPropertiesEvaluated metaPropertiesEvaluated = new MetaPropertiesEvaluated();
                 changingPhoenixTableProperty = evaluateStmtProperties(metaProperties,metaPropertiesEvaluated,table,schemaName,tableName);
+                // If changing isImmutableRows to true or it's not being changed and is already true
+                boolean willBeImmutableRows = Boolean.TRUE.equals(metaPropertiesEvaluated.getIsImmutableRows()) || (metaPropertiesEvaluated.getIsImmutableRows() == null && table.isImmutableRows());
 
                 Long timeStamp = TransactionUtil.getTableTimestamp(connection, table.isTransactional() || metaProperties.getNonTxToTx());
                 int numPkColumnsAdded = 0;
@@ -3248,8 +3230,8 @@ public class MetaDataClient {
                                 if(colDef.isPK()) {
                                     throw new SQLExceptionInfo.Builder(SQLExceptionCode.NOT_NULLABLE_COLUMN_IN_ROW_KEY)
                                     .setColumnName(colDef.getColumnDefName().getColumnName()).build().buildException();
-                                } else {
-                                    throw new SQLExceptionInfo.Builder(SQLExceptionCode.CANNOT_ADD_NOT_NULLABLE_COLUMN)
+                                } else if (!willBeImmutableRows) {
+                                    throw new SQLExceptionInfo.Builder(SQLExceptionCode.KEY_VALUE_NOT_NULL)
                                     .setColumnName(colDef.getColumnDefName().getColumnName()).build().buildException();
                                 }
                             }
@@ -3293,7 +3275,7 @@ public class MetaDataClient {
                                 .setSchemaName(schemaName)
                                 .setTableName(tableName).build().buildException();
                             }
-                            PColumn column = newColumn(position++, colDef, PrimaryKeyConstraint.EMPTY, table.getDefaultFamilyName() == null ? null : table.getDefaultFamilyName().getString(), true, columnQualifierBytes);
+                            PColumn column = newColumn(position++, colDef, PrimaryKeyConstraint.EMPTY, table.getDefaultFamilyName() == null ? null : table.getDefaultFamilyName().getString(), true, columnQualifierBytes, willBeImmutableRows);
                             columns.add(column);
                             String pkName = null;
                             Short keySeq = null;
@@ -3331,7 +3313,7 @@ public class MetaDataClient {
                                         ColumnName indexColName = ColumnName.caseSensitiveColumnName(IndexUtil.getIndexColumnName(null, colDef.getColumnDefName().getColumnName()));
                                         Expression expression = new RowKeyColumnExpression(columns.get(i), new RowKeyValueAccessor(pkColumns, ++pkSlotPosition));
                                         ColumnDef indexColDef = FACTORY.columnDef(indexColName, indexColDataType.getSqlTypeName(), colDef.isNull(), colDef.getMaxLength(), colDef.getScale(), true, colDef.getSortOrder(), expression.toString(), colDef.isRowTimestamp());
-                                        PColumn indexColumn = newColumn(indexPosition++, indexColDef, PrimaryKeyConstraint.EMPTY, null, true, null);
+                                        PColumn indexColumn = newColumn(indexPosition++, indexColDef, PrimaryKeyConstraint.EMPTY, null, true, null, willBeImmutableRows);
                                         addColumnMutation(schemaName, index.getTableName().getString(), indexColumn, colUpsert, index.getParentTableName().getString(), index.getPKName() == null ? null : index.getPKName().getString(), ++nextIndexKeySeq, index.getBucketNum() != null);
                                     }
                                 }

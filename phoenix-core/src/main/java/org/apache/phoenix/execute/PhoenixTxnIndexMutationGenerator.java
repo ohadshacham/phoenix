@@ -17,17 +17,35 @@
  */
 package org.apache.phoenix.execute;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
-import com.google.common.primitives.Longs;
+import java.io.IOException;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.ListIterator;
+import java.util.Map;
+import java.util.Set;
+
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hbase.*;
-import org.apache.hadoop.hbase.client.*;
+import org.apache.hadoop.hbase.Cell;
+import org.apache.hadoop.hbase.CellScanner;
+import org.apache.hadoop.hbase.HRegionLocation;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.KeyValueUtil;
+import org.apache.hadoop.hbase.client.Delete;
+import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.client.Mutation;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.client.Result;
+import org.apache.hadoop.hbase.client.ResultScanner;
+import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.coprocessor.RegionCoprocessorEnvironment;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.regionserver.MiniBatchOperationInProgress;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.phoenix.compile.ScanRanges;
@@ -53,9 +71,10 @@ import org.apache.phoenix.transaction.PhoenixTransactionContext.PhoenixVisibilit
 import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.SchemaUtil;
 
-import java.io.IOException;
-import java.sql.SQLException;
-import java.util.*;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
+import com.google.common.primitives.Longs;
 
 
 public class PhoenixTxnIndexMutationGenerator {
@@ -93,7 +112,7 @@ public class PhoenixTxnIndexMutationGenerator {
         IndexMaintainer maintainer = index.getIndexMaintainer(table, connection);
 
         boolean isRollback = txRollbackAttribute!=null;
-        boolean isImmutable = maintainer.isImmutableRows();
+        boolean isImmutable = index.isImmutableRows();
         ResultScanner currentScanner = null;
         HTableInterface txTable = null;
         // Collect up all mutations in batch
@@ -434,11 +453,6 @@ public class PhoenixTxnIndexMutationGenerator {
         @Override
         public long getCurrentTimestamp() {
             return currentTimestamp;
-        }
-
-        @Override
-        public Map<String, byte[]> getUpdateAttributes() {
-            return null;
         }
 
         @Override

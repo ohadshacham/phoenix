@@ -71,6 +71,8 @@ import org.apache.phoenix.parse.TableNodeVisitor;
 import org.apache.phoenix.parse.TableWildcardParseNode;
 import org.apache.phoenix.parse.UDFParseNode;
 import org.apache.phoenix.parse.WildcardParseNode;
+import org.apache.phoenix.query.QueryServices;
+import org.apache.phoenix.query.QueryServicesOptions;
 import org.apache.phoenix.schema.ColumnNotFoundException;
 import org.apache.phoenix.schema.ColumnRef;
 import org.apache.phoenix.schema.LocalIndexDataColumnRef;
@@ -124,6 +126,8 @@ public class JoinCompiler {
     private final ColumnResolver origResolver;
     private final boolean useStarJoin;
     private final Map<ColumnRef, ColumnRefType> columnRefs;
+    private final boolean useSortMergeJoin;
+    private final boolean costBased;
 
 
     private JoinCompiler(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver) {
@@ -132,6 +136,9 @@ public class JoinCompiler {
         this.origResolver = resolver;
         this.useStarJoin = !select.getHint().hasHint(Hint.NO_STAR_JOIN);
         this.columnRefs = new HashMap<ColumnRef, ColumnRefType>();
+        this.useSortMergeJoin = select.getHint().hasHint(Hint.USE_SORT_MERGE_JOIN);
+        this.costBased = statement.getConnection().getQueryServices().getProps().getBoolean(
+                QueryServices.COST_BASED_OPTIMIZER_ENABLED, QueryServicesOptions.DEFAULT_COST_BASED_OPTIMIZER_ENABLED);
     }
 
     public static JoinTable compile(PhoenixStatement statement, SelectStatement select, ColumnResolver resolver) throws SQLException {
@@ -365,6 +372,42 @@ public class JoinCompiler {
         }
 
         /**
+         * Return a list of all applicable join strategies. The order of the strategies in the
+         * returned list is based on the static rule below. However, the caller can decide on
+         * an optimal join strategy by evaluating and comparing the costs.
+         * 1. If hint USE_SORT_MERGE_JOIN is specified,
+         *    return a singleton list containing only SORT_MERGE.
+         * 2. If 1) matches pattern "A LEFT/INNER/SEMI/ANTI JOIN B"; or
+         *       2) matches pattern "A LEFT/INNER/SEMI/ANTI JOIN B (LEFT/INNER/SEMI/ANTI JOIN C)+"
+         *          and hint NO_STAR_JOIN is not specified,
+         *    add BUILD_RIGHT to the returned list.
+         * 3. If matches pattern "A RIGHT/INNER JOIN B", where B is either a named table reference
+         *    or a flat sub-query,
+         *    add BUILD_LEFT to the returned list.
+         * 4. add SORT_MERGE to the returned list.
+         */
+        public List<Strategy> getApplicableJoinStrategies() {
+            List<Strategy> strategies = Lists.newArrayList();
+            if (useSortMergeJoin) {
+                strategies.add(Strategy.SORT_MERGE);
+            } else {
+                if (getStarJoinVector() != null) {
+                    strategies.add(Strategy.HASH_BUILD_RIGHT);
+                }
+                JoinSpec lastJoinSpec = joinSpecs.get(joinSpecs.size() - 1);
+                JoinType type = lastJoinSpec.getType();
+                if ((type == JoinType.Right || type == JoinType.Inner)
+                        && lastJoinSpec.getJoinTable().getJoinSpecs().isEmpty()
+                        && lastJoinSpec.getJoinTable().getTable().isFlat()) {
+                    strategies.add(Strategy.HASH_BUILD_LEFT);
+                }
+                strategies.add(Strategy.SORT_MERGE);
+            }
+
+            return strategies;
+        }
+
+        /**
          * Returns a boolean vector indicating whether the evaluation of join expressions
          * can be evaluated at an early stage if the input JoinSpec can be taken as a
          * star join. Otherwise returns null.
@@ -518,6 +561,10 @@ public class JoinCompiler {
                 }
                 compiled.add(new Pair<Expression, Expression>(left, right));
             }
+            // TODO PHOENIX-4618:
+            // For Stategy.SORT_MERGE, we probably need to re-order the join keys based on the
+            // specific ordering required by the join's parent, or re-order the following way
+            // to align with group-by expressions' re-ordering.
             if (strategy != Strategy.SORT_MERGE) {
                 Collections.sort(compiled, new Comparator<Pair<Expression, Expression>>() {
                     @Override
@@ -1156,7 +1203,8 @@ public class JoinCompiler {
         return AndExpression.create(expressions);
     }
 
-    public static SelectStatement optimize(PhoenixStatement statement, SelectStatement select, final ColumnResolver resolver) throws SQLException {
+    public static Pair<SelectStatement, Map<TableRef, QueryPlan>> optimize(
+            PhoenixStatement statement, SelectStatement select, final ColumnResolver resolver) throws SQLException {
         TableRef groupByTableRef = null;
         TableRef orderByTableRef = null;
         if (select.getGroupBy() != null && !select.getGroupBy().isEmpty()) {
@@ -1183,7 +1231,7 @@ public class JoinCompiler {
             QueryCompiler compiler = new QueryCompiler(statement, select, resolver, false, null);
             List<Object> binds = statement.getParameters();
             StatementContext ctx = new StatementContext(statement, resolver, new Scan(), new SequenceManager(statement));
-            QueryPlan plan = compiler.compileJoinQuery(ctx, binds, join, false, false, null);
+            QueryPlan plan = compiler.compileJoinQuery(ctx, binds, join, false, false, null, Collections.<TableRef, QueryPlan>emptyMap());
             TableRef table = plan.getTableRef();
             if (groupByTableRef != null && !groupByTableRef.equals(table)) {
                 groupByTableRef = null;
@@ -1193,7 +1241,8 @@ public class JoinCompiler {
             }
         }
 
-        final Map<TableRef, TableRef> replacement = new HashMap<TableRef, TableRef>();
+        Map<TableRef, TableRef> replacementMap = null;
+        Map<TableRef, QueryPlan> dataPlanMap = null;
 
         for (Table table : join.getTables()) {
             if (table.isSubselect())
@@ -1202,19 +1251,30 @@ public class JoinCompiler {
             List<ParseNode> groupBy = tableRef.equals(groupByTableRef) ? select.getGroupBy() : null;
             List<OrderByNode> orderBy = tableRef.equals(orderByTableRef) ? select.getOrderBy() : null;
             SelectStatement stmt = getSubqueryForOptimizedPlan(select.getHint(), table.getDynamicColumns(), table.getTableSamplingRate(), tableRef, join.getColumnRefs(), table.getPreFiltersCombined(), groupBy, orderBy, table.isWildCardSelect(), select.hasSequence(), select.getUdfParseNodes());
-            // TODO: As port of PHOENIX-4585, we need to make sure this plan has a pointer to the data plan
-            // when an index is used instead of the data table, and that this method returns that
-            // state for downstream processing.
             // TODO: It seems inefficient to be recompiling the statement again and again inside of this optimize call
-            QueryPlan plan = statement.getConnection().getQueryServices().getOptimizer().optimize(statement, stmt);
-            if (!plan.getTableRef().equals(tableRef)) {
-                replacement.put(tableRef, plan.getTableRef());
+            QueryPlan dataPlan =
+                    new QueryCompiler(
+                            statement, stmt,
+                            FromCompiler.getResolverForQuery(stmt, statement.getConnection()),
+                            false, null)
+                    .compile();
+            QueryPlan plan = statement.getConnection().getQueryServices().getOptimizer().optimize(statement, dataPlan);
+            TableRef newTableRef = plan.getTableRef();
+            if (!newTableRef.equals(tableRef)) {
+                if (replacementMap == null) {
+                    replacementMap = new HashMap<TableRef, TableRef>();
+                    dataPlanMap = new HashMap<TableRef, QueryPlan>();
+                }
+                replacementMap.put(tableRef, newTableRef);
+                dataPlanMap.put(newTableRef, dataPlan);
             }
         }
 
-        if (replacement.isEmpty())
-            return select;
+        if (replacementMap == null)
+            return new Pair<SelectStatement, Map<TableRef, QueryPlan>>(
+                    select, Collections.<TableRef, QueryPlan> emptyMap());
 
+        final Map<TableRef, TableRef> replacement = replacementMap;
         TableNode from = select.getFrom();
         TableNode newFrom = from.accept(new TableNodeVisitor<TableNode>() {
             private TableRef resolveTable(String alias, TableName name) throws SQLException {
@@ -1276,7 +1336,7 @@ public class JoinCompiler {
             // replace expressions with corresponding matching columns for functional indexes
             indexSelect = ParseNodeRewriter.rewrite(indexSelect, new  IndexExpressionParseNodeRewriter(indexTableRef.getTable(), indexTableRef.getTableAlias(), statement.getConnection(), indexSelect.getUdfParseNodes()));
         } 
-        return indexSelect;
+        return new Pair<SelectStatement, Map<TableRef, QueryPlan>>(indexSelect, dataPlanMap);
     }
 
     private static SelectStatement getSubqueryForOptimizedPlan(HintNode hintNode, List<ColumnDef> dynamicCols, Double tableSamplingRate, TableRef tableRef, Map<ColumnRef, ColumnRefType> columnRefs, ParseNode where, List<ParseNode> groupBy,
