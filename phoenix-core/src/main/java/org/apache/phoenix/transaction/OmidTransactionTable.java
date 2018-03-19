@@ -54,6 +54,12 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     private Transaction tx;
     private boolean conflictFree;
 
+    public OmidTransactionTable() throws SQLException {
+        this.tTable = null;
+        this.tx = null;
+        this.conflictFree = false;
+    }
+
     public OmidTransactionTable(PhoenixTransactionContext ctx, HTableInterface hTable) throws SQLException {
         this(ctx, hTable, null);
     }
@@ -194,6 +200,11 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public void close() throws IOException {
         tTable.close();
+    }
+
+    @Override
+    public Put MarkPutAsCommitted(Put put, long timestamp, long commitTimestamp) throws IOException {
+        return TTable.markPutAsCommitted(put, timestamp, timestamp);
     }
 
     @Override

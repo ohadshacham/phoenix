@@ -123,6 +123,24 @@ public class TransactionFactory {
         return ctx;
     }
 
+    public PhoenixTransactionalTable getTransactionalTable() throws SQLException {
+
+        PhoenixTransactionalTable table = null;
+
+        switch(tp) {
+            case Tephra:
+                table = new TephraTransactionTable();
+                break;
+            case Omid:
+                table = new OmidTransactionTable();
+                break;
+            default:
+                table = null;
+        }
+
+        return table;
+    }
+
     public PhoenixTransactionalTable getTransactionalTable(PhoenixTransactionContext ctx, HTableInterface htable) throws SQLException {
 
         PhoenixTransactionalTable table = null;
