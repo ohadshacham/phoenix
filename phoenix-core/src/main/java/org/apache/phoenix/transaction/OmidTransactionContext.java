@@ -140,8 +140,6 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         try {
             tx = (HBaseTransaction) tm.begin();
-            System.out.println("Ohad transaction " + tx + " started.");
-            System.out.flush();
         } catch (TransactionException e) {
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
@@ -156,21 +154,13 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
             return;
 
         try {
-            System.out.println("Ohad commit transaction " + tx);
-            System.out.flush();
             tm.commit(tx);
-            System.out.println("Ohad successfully commit transaction " + tx);
-            System.out.flush();
         } catch (TransactionException e) {
-            System.out.println("Ohad Transaction exception for " + tx);
-            System.out.flush();
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_FAILED)
                     .setMessage(e.getMessage()).setRootCause(e).build()
                     .buildException();
         } catch (RollbackException e) {
-            System.out.println("Ohad Rollback exception for " + tx);
-            System.out.flush();
             throw new SQLExceptionInfo.Builder(
                     SQLExceptionCode.TRANSACTION_CONFLICT_EXCEPTION)
                     .setMessage(e.getMessage()).setRootCause(e).build()
@@ -192,9 +182,6 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
                     .setMessage(e.getMessage()).setRootCause(e).build()
                     .buildException();
         }
-        System.out.println("Ohad rollback transaction " + tx.getTransactionId());
-        System.out.flush();
-        
     }
 
     @Override
@@ -202,8 +189,6 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
         if (hasUncommittedData) {
             try {
                 tx.checkpoint();
-                System.out.println("Ohad checkpoint for transaction " + tx.getTransactionId() + " new write pointer " + tx.getWriteTimestamp());
-                System.out.flush();
             } catch (TransactionException e) {
                 throw new SQLException(e);
             }
@@ -216,8 +201,6 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
         try {
             tx = (HBaseTransaction) transactionManager.fence(dataTable.getName().getBytes());
-            System.out.println("Fence created at " + tx.getReadTimestamp());
-            System.out.flush();
             if (logger.isInfoEnabled()) {
                 logger.info("Added write fence at ~"
                         + tx.getReadTimestamp());

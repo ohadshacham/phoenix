@@ -1195,14 +1195,8 @@ public class MutationState implements SQLCloseable {
             if (connection.getTenantId() != null) {
                 mutation.setAttribute(PhoenixRuntime.TENANT_ID_ATTRIB, tenantIdBytes);
             }
-            if (uuidValue != null) {
-                System.out.println("Set INDEX_UUID attribute for " + Bytes.toString(mutation.getRow()));
-                System.out.flush();
-            }
             mutation.setAttribute(PhoenixIndexCodec.INDEX_UUID, uuidValue);
             if (attribValue != null) {
-                System.out.println("Set INDEX_PROTO_MD attribute for " + Bytes.toString(mutation.getRow()));
-                System.out.flush();
                 mutation.setAttribute(PhoenixIndexCodec.INDEX_PROTO_MD, attribValue);
                 mutation.setAttribute(PhoenixIndexCodec.CLIENT_VERSION, Bytes.toBytes(MetaDataProtocol.PHOENIX_VERSION));
                 if (txState.length > 0) {

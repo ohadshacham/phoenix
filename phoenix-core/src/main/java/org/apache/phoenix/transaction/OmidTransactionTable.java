@@ -94,13 +94,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public void put(Put put) throws IOException {
-        System.out.println("OHAD Start printing");
-        Map<byte[],?> map = put.getFamilyCellMap();
-        for (Map.Entry<byte[], ?> entry : map.entrySet())
-        {
-            System.out.println("OHAD " + Arrays.toString(entry.getKey()));
-        }
-
         tTable.put(tx, put);
     }
 
@@ -111,8 +104,6 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public ResultScanner getScanner(Scan scan) throws IOException {
-        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
-        System.out.flush();
         scan.setTimeRange(0, Long.MAX_VALUE);
         return tTable.getScanner(tx, scan);
     }
@@ -144,27 +135,18 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
 
     @Override
     public ResultScanner getScanner(byte[] family) throws IOException {
-        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
-        System.out.flush();
         return tTable.getScanner(tx, family);
     }
 
     @Override
     public ResultScanner getScanner(byte[] family, byte[] qualifier)
             throws IOException {
-        System.out.println("getScanner transaction " + tx.getTransactionId() + " read pointer " + tx.getReadTimestamp());
-        System.out.flush();
         return tTable.getScanner(tx, family, qualifier);
     }
 
     @Override
     public void put(List<Put> puts) throws IOException {
-        try {
-            tTable.put(tx, puts);
-        } catch (InterruptedException e) {
-            // TODO Auto-generated catch block
-            e.printStackTrace();
-        }
+        throw new UnsupportedActionException("Function put(List<Put>) is not supported");
     }
 
     @Override
@@ -260,16 +242,9 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
     @Override
     public Object[] batch(List<? extends Row> actions) throws IOException,
             InterruptedException {
-
-        System.out.println("Batch transaction " + tx.getTransactionId() + " write pointer " + tx.getWriteTimestamp() + " size " + actions.size() + " table: " + Bytes.toString(tTable.getTableName()));
-        System.out.flush();
-
         List<Put> putList = new ArrayList<Put>();
 
        for (Row row : actions) {
-           System.out.println("Batch transaction " + tx.getTransactionId() + " " + Bytes.toString(row.getRow()) + " table: " + Bytes.toString(tTable.getTableName()));
-           System.out.flush();
-
            if (row instanceof Put) {
                Put put = (Put) row;
                if (conflictFree) {
@@ -283,7 +258,7 @@ public class OmidTransactionTable implements PhoenixTransactionalTable {
            }
        }
 
-       this.put(putList);
+       tTable.put(tx, putList);
 
        return null;
     }
