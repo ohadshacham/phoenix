@@ -337,7 +337,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
 
     @Override
     public BaseRegionObserver getGarbageCollector() {
-        return new OmidCompactor();
+        return new OmidCompactor(true);
     }
 
     @Override
