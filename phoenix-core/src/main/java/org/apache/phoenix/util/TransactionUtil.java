@@ -17,12 +17,18 @@
  */
 package org.apache.phoenix.util;
 
+import java.io.IOException;
 import java.sql.SQLException;
+import java.util.List;
+import java.util.Map;
 
 import org.apache.hadoop.hbase.Cell;
 import org.apache.hadoop.hbase.CellUtil;
 import org.apache.hadoop.hbase.HConstants;
+import org.apache.hadoop.hbase.client.Delete;
 import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.client.Mutation;
+import org.apache.hadoop.hbase.client.Put;
 import org.apache.phoenix.coprocessor.MetaDataProtocol.MetaDataMutationResult;
 import org.apache.phoenix.execute.MutationState;
 import org.apache.phoenix.jdbc.PhoenixConnection;
@@ -46,11 +52,11 @@ public class TransactionUtil {
     }
     
     public static long convertToNanoseconds(long serverTimeStamp) {
-        return serverTimeStamp * TransactionFactory.getTransactionFactory().getTransactionContext().getMaxTransactionsPerSecond();
+        return serverTimeStamp * TransactionFactory.getTransactionProvider().getTransactionContext().getMaxTransactionsPerSecond();
     }
     
     public static long convertToMilliseconds(long serverTimeStamp) {
-        return serverTimeStamp / TransactionFactory.getTransactionFactory().getTransactionContext().getMaxTransactionsPerSecond();
+        return serverTimeStamp / TransactionFactory.getTransactionProvider().getTransactionContext().getMaxTransactionsPerSecond();
     }
     
     // we resolve transactional tables at the txn read pointer
@@ -84,5 +90,47 @@ public class TransactionUtil {
 		}
 		timestamp = convertToMilliseconds(mutationState.getInitialWritePointer());
 		return timestamp;
+	}
+	
+    // Convert HBase Delete into Put so that it can be undone if transaction is rolled back
+	public static Mutation convertIfDelete(Mutation mutation) throws IOException {
+        if (mutation instanceof Delete) {
+            Put deleteMarker = null;
+            for (Map.Entry<byte[],List<Cell>> entry : mutation.getFamilyCellMap().entrySet()) {
+                byte[] family = entry.getKey();
+                List<Cell> familyCells = entry.getValue();
+                if (familyCells.size() == 1) {
+                    if (CellUtil.isDeleteFamily(familyCells.get(0))) {
+                        if (deleteMarker == null) {
+                            deleteMarker = new Put(mutation.getRow());
+                        }
+                        deleteMarker.add(TransactionFactory.getTransactionProvider().newDeleteFamilyMarker(
+                                deleteMarker.getRow(), 
+                                family, 
+                                familyCells.get(0).getTimestamp()));
+                    }
+                } else {
+                    for (Cell cell : familyCells) {
+                        if (CellUtil.isDeleteColumns(cell)) {
+                            if (deleteMarker == null) {
+                                deleteMarker = new Put(mutation.getRow());
+                            }
+                            deleteMarker.add(TransactionFactory.getTransactionProvider().newDeleteColumnMarker(
+                                    deleteMarker.getRow(),
+                                    family,
+                                    CellUtil.cloneQualifier(cell), 
+                                    cell.getTimestamp()));
+                        }
+                    }
+                }
+            }
+            if (deleteMarker != null) {
+                for (Map.Entry<String, byte[]> entry : mutation.getAttributesMap().entrySet()) {
+                    deleteMarker.setAttribute(entry.getKey(), entry.getValue());
+                }
+                mutation = deleteMarker;
+            }
+        }
+        return mutation;
 	}
 }

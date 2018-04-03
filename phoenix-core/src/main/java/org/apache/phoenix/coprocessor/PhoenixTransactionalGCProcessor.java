@@ -22,7 +22,7 @@ import org.apache.phoenix.transaction.TransactionFactory;
 public class PhoenixTransactionalGCProcessor extends DelegateRegionObserver {
 
     public PhoenixTransactionalGCProcessor() {
-        super(TransactionFactory.getTransactionFactory().getTransactionContext().getGarbageCollector());
+        super(TransactionFactory.getTransactionProvider().getTransactionContext().getGarbageCollector());
     }
 
 }

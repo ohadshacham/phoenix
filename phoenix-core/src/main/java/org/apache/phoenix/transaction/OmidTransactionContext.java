@@ -331,7 +331,7 @@ public class OmidTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
-    public BaseRegionObserver getCoProcessor() {
+    public BaseRegionObserver getCoprocessor() {
         return new OmidSnapshotFilter(commitTableClient);
     }
 

@@ -228,7 +228,6 @@ public class TestUtil {
     public static final String STABLE_NAME = "STABLE";
     public static final String STABLE_PK_NAME = "ID";
     public static final String STABLE_SCHEMA_NAME = "";
-    public static final String GROUPBYTEST_NAME = "GROUPBYTEST";
     public static final String CUSTOM_ENTITY_DATA_FULL_NAME = "CORE.CUSTOM_ENTITY_DATA";
     public static final String CUSTOM_ENTITY_DATA_NAME = "CUSTOM_ENTITY_DATA";
     public static final String CUSTOM_ENTITY_DATA_SCHEMA_NAME = "CORE";
@@ -851,6 +850,25 @@ public class TestUtil {
             }
         }
         System.out.println("-----------------------------------------------");
+    }
+
+    public static int getRawRowCount(HTableInterface table) throws IOException {
+        Scan s = new Scan();
+        s.setRaw(true);;
+        s.setMaxVersions();
+        int rows = 0;
+        try (ResultScanner scanner = table.getScanner(s)) {
+            Result result = null;
+            while ((result = scanner.next()) != null) {
+                rows++;
+                CellScanner cellScanner = result.cellScanner();
+                Cell current = null;
+                while (cellScanner.advance()) {
+                    current = cellScanner.current();
+                }
+            }
+        }
+        return rows;
     }
 
     public static void dumpIndexStatus(Connection conn, String indexName) throws IOException, SQLException {

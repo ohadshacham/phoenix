@@ -43,7 +43,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
 
-import com.google.common.collect.Lists;
 import org.apache.hadoop.hbase.HRegionLocation;
 import org.apache.hadoop.hbase.client.Scan;
 import org.apache.hadoop.hbase.filter.Filter;
@@ -52,7 +51,18 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.phoenix.compile.OrderByCompiler.OrderBy;
 import org.apache.phoenix.coprocessor.BaseScannerRegionObserver;
 import org.apache.phoenix.exception.SQLExceptionCode;
-import org.apache.phoenix.execute.*;
+import org.apache.phoenix.execute.AggregatePlan;
+import org.apache.phoenix.execute.ClientAggregatePlan;
+import org.apache.phoenix.execute.ClientScanPlan;
+import org.apache.phoenix.execute.CorrelatePlan;
+import org.apache.phoenix.execute.CursorFetchPlan;
+import org.apache.phoenix.execute.HashJoinPlan;
+import org.apache.phoenix.execute.LiteralResultIterationPlan;
+import org.apache.phoenix.execute.ScanPlan;
+import org.apache.phoenix.execute.SortMergeJoinPlan;
+import org.apache.phoenix.execute.TupleProjectionPlan;
+import org.apache.phoenix.execute.UnionPlan;
+import org.apache.phoenix.execute.UnnestArrayPlan;
 import org.apache.phoenix.execute.visitor.QueryPlanVisitor;
 import org.apache.phoenix.expression.Expression;
 import org.apache.phoenix.expression.LiteralExpression;
@@ -87,6 +97,8 @@ import org.apache.phoenix.util.ScanUtil;
 import org.apache.phoenix.util.SchemaUtil;
 import org.junit.Ignore;
 import org.junit.Test;
+
+import com.google.common.collect.Lists;
 
 
 
@@ -2172,6 +2184,48 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             assertTrue(QueryUtil.getExplainPlan(rs).contains("    SERVER ARRAY ELEMENT PROJECTION"));
         } finally {
             conn.createStatement().execute("DROP TABLE IF EXISTS t");
+            conn.close();
+        }
+    }
+
+    @Test
+    public void testArrayAppendSingleArg() throws SQLException {
+        Connection conn = DriverManager.getConnection(getUrl());
+        try {
+            conn.createStatement().execute("CREATE TABLE t (p INTEGER PRIMARY KEY, arr1 INTEGER ARRAY, arr2 INTEGER ARRAY)");
+            conn.createStatement().executeQuery("SELECT ARRAY_APPEND(arr2) from t");
+            fail();
+        } catch (SQLException e) {
+            assertEquals(SQLExceptionCode.FUNCTION_UNDEFINED.getErrorCode(),e.getErrorCode());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    public void testArrayPrependSingleArg() throws SQLException {
+        Connection conn = DriverManager.getConnection(getUrl());
+        try {
+            conn.createStatement().execute("CREATE TABLE t (p INTEGER PRIMARY KEY, arr1 INTEGER ARRAY, arr2 INTEGER ARRAY)");
+            conn.createStatement().executeQuery("SELECT ARRAY_PREPEND(arr2) from t");
+            fail();
+        } catch (SQLException e) {
+            assertEquals(SQLExceptionCode.FUNCTION_UNDEFINED.getErrorCode(),e.getErrorCode());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    public void testArrayConcatSingleArg() throws SQLException {
+        Connection conn = DriverManager.getConnection(getUrl());
+        try {
+            conn.createStatement().execute("CREATE TABLE t (p INTEGER PRIMARY KEY, arr1 INTEGER ARRAY, arr2 INTEGER ARRAY)");
+            conn.createStatement().executeQuery("SELECT ARRAY_CAT(arr2) from t");
+            fail();
+        } catch (SQLException e) {
+            assertEquals(SQLExceptionCode.FUNCTION_UNDEFINED.getErrorCode(),e.getErrorCode());
+        } finally {
             conn.close();
         }
     }
@@ -4479,6 +4533,32 @@ public class QueryCompilerTest extends BaseConnectionlessQueryTest {
             plan.iterator();
             List<List<Scan>> outerScans = plan.getScans();
             assertEquals(6, outerScans.size());
+        }
+    }
+
+    @Test
+    public void testSmallScanForPointLookups() throws SQLException {
+        Properties props = PropertiesUtil.deepCopy(new Properties());
+        createTestTable(getUrl(), "CREATE TABLE FOO(\n" +
+                      "                a VARCHAR NOT NULL,\n" +
+                      "                b VARCHAR NOT NULL,\n" +
+                      "                c VARCHAR,\n" +
+                      "                CONSTRAINT pk PRIMARY KEY (a, b DESC, c)\n" +
+                      "              )");
+
+        props.put(QueryServices.SMALL_SCAN_THRESHOLD_ATTRIB, "2");
+        try (Connection conn = DriverManager.getConnection(getUrl(), props)) {
+            String query = "select * from foo where a = 'a' and b = 'b' and c in ('x','y','z')";
+            PhoenixStatement stmt = conn.createStatement().unwrap(PhoenixStatement.class);
+            QueryPlan plan = stmt.optimizeQuery(query);
+            plan.iterator();
+            //Fail since we have 3 rows in pointLookup
+            assertFalse(plan.getContext().getScan().isSmall());
+            query = "select * from foo where a = 'a' and b = 'b' and c = 'c'";
+            plan = stmt.compileQuery(query);
+            plan.iterator();
+            //Should be small scan, query is for single row pointLookup
+            assertTrue(plan.getContext().getScan().isSmall());
         }
     }
 

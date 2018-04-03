@@ -129,6 +129,7 @@ import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
 import org.apache.hadoop.hbase.util.VersionInfo;
 import org.apache.hadoop.hbase.zookeeper.ZKConfig;
+import org.apache.hadoop.ipc.RemoteException;
 import org.apache.phoenix.compile.MutationPlan;
 import org.apache.phoenix.coprocessor.GroupedAggregateRegionObserver;
 import org.apache.phoenix.coprocessor.MetaDataEndpointImpl;
@@ -177,6 +178,7 @@ import org.apache.phoenix.hbase.index.util.KeyValueBuilder;
 import org.apache.phoenix.hbase.index.util.VersionUtil;
 import org.apache.phoenix.index.PhoenixIndexBuilder;
 import org.apache.phoenix.index.PhoenixIndexCodec;
+import org.apache.phoenix.index.PhoenixTransactionalIndexer;
 import org.apache.phoenix.iterate.TableResultIterator;
 import org.apache.phoenix.iterate.TableResultIterator.RenewLeaseStatus;
 import org.apache.phoenix.jdbc.PhoenixConnection;
@@ -401,7 +403,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
     }
 
     private void initTxServiceClient() throws SQLException {
-        txZKClientService = TransactionFactory.getTransactionFactory().getTransactionContext().setTransactionClient(config, props, connectionInfo);
+        txZKClientService = TransactionFactory.getTransactionProvider().getTransactionContext().setTransactionClient(config, props, connectionInfo);
     }
 
     private void openConnection() throws SQLException {
@@ -852,11 +854,18 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     && !SchemaUtil.isMetaTable(tableName)
                     && !SchemaUtil.isStatsTable(tableName)) {
                 if (isTransactional) {
+                    if (!descriptor.hasCoprocessor(PhoenixTransactionalIndexer.class.getName())) {
+                        descriptor.addCoprocessor(PhoenixTransactionalIndexer.class.getName(), null, priority, null);
+                    }
                     // For alter table, remove non transactional index coprocessor
                     if (descriptor.hasCoprocessor(Indexer.class.getName())) {
                         descriptor.removeCoprocessor(Indexer.class.getName());
                     }
                 } else {
+                    // If exception on alter table to transition back to non transactional
+                    if (descriptor.hasCoprocessor(PhoenixTransactionalIndexer.class.getName())) {
+                        descriptor.removeCoprocessor(PhoenixTransactionalIndexer.class.getName());
+                    }
                     if (!descriptor.hasCoprocessor(Indexer.class.getName())) {
                         Map<String, String> opts = Maps.newHashMapWithExpectedSize(1);
                         opts.put(NonTxIndexBuilder.CODEC_CLASS_NAME_KEY, PhoenixIndexCodec.class.getName());
@@ -903,7 +912,7 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                     descriptor.addCoprocessor(PhoenixTransactionalProcessor.class.getName(), null, priority - 10, null);
                 }
                 if (!descriptor.hasCoprocessor(PhoenixTransactionalGCProcessor.class.getName()) &&
-                        (TransactionFactory.getTransactionFactory().getTransactionContext().getGarbageCollector() != null)) {
+                        (TransactionFactory.getTransactionProvider().getTransactionContext().getGarbageCollector() != null)) {
                     descriptor.addCoprocessor(PhoenixTransactionalGCProcessor.class.getName(), null, priority - 10, null);
                 }
             } else {
@@ -2459,7 +2468,20 @@ public class ConnectionQueryServicesImpl extends DelegateQueryServices implement
                                         setUpgradeRequired();
                                     }
                                 } catch (PhoenixIOException e) {
-                                    if (!Iterables.isEmpty(Iterables.filter(Throwables.getCausalChain(e), AccessDeniedException.class))) {
+                                    boolean foundAccessDeniedException = false;
+                                    // when running spark/map reduce jobs the ADE might be wrapped
+                                    // in a RemoteException
+                                    for (Throwable t : Throwables.getCausalChain(e)) {
+                                        if (t instanceof AccessDeniedException
+                                                || (t instanceof RemoteException
+                                                        && ((RemoteException) t).getClassName()
+                                                                .equals(AccessDeniedException.class
+                                                                        .getName()))) {
+                                            foundAccessDeniedException = true;
+                                            break;
+                                        }
+                                    }
+                                    if (foundAccessDeniedException) {
                                         // Pass
                                         logger.warn("Could not check for Phoenix SYSTEM tables, assuming they exist and are properly configured");
                                         checkClientServerCompatibility(SchemaUtil.getPhysicalName(SYSTEM_CATALOG_NAME_BYTES, getProps()).getName());

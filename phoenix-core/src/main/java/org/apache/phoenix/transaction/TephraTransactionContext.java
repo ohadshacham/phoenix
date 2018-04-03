@@ -429,7 +429,7 @@ public class TephraTransactionContext implements PhoenixTransactionContext {
     }
 
     @Override
-    public BaseRegionObserver getCoProcessor() {
+    public BaseRegionObserver getCoprocessor() {
         return new TransactionProcessor();
     }
 

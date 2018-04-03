@@ -197,7 +197,7 @@ public class QueryServicesOptions {
     public static final long DEFAULT_INDEX_REBUILD_RPC_TIMEOUT = 30000 * 60; // 30 mins
     public static final long DEFAULT_INDEX_REBUILD_CLIENT_SCANNER_TIMEOUT = 30000 * 60; // 30 mins
     public static final int DEFAULT_INDEX_REBUILD_RPC_RETRIES_COUNTER = 5; // 5 total tries at rpc level
-    public static final int DEFAULT_INDEX_REBUILD_DISABLE_TIMESTAMP_THRESHOLD = 30000 * 60; // 30 mins
+    public static final int DEFAULT_INDEX_REBUILD_DISABLE_TIMESTAMP_THRESHOLD = 60000 * 60 * 24; // 24 hrs
     public static final long DEFAULT_INDEX_PENDING_DISABLE_THRESHOLD = 30000; // 30 secs
 
     /**
@@ -235,6 +235,8 @@ public class QueryServicesOptions {
     public static final int DEFAULT_STATS_POOL_SIZE = 4;
     // Maximum size (in bytes) that cached table stats should take upm
     public static final long DEFAULT_STATS_MAX_CACHE_SIZE = 256 * 1024 * 1024;
+    // Allow stats collection to be initiated by client multiple times immediately
+    public static final int DEFAULT_MIN_STATS_UPDATE_FREQ_MS = 0;
 
     public static final boolean DEFAULT_USE_REVERSE_SCAN = true;
 
@@ -325,6 +327,7 @@ public class QueryServicesOptions {
 
     //default update cache frequency
     public static final int DEFAULT_UPDATE_CACHE_FREQUENCY = 0;
+    public static final int DEFAULT_SMALL_SCAN_THRESHOLD = 100;
 
     @SuppressWarnings("serial")
     public static final Set<String> DEFAULT_QUERY_SERVER_SKIP_WORDS = new HashSet<String>() {
@@ -381,6 +384,7 @@ public class QueryServicesOptions {
             .setIfUnset(DATE_FORMAT_ATTRIB, DEFAULT_DATE_FORMAT)
             .setIfUnset(DATE_FORMAT_TIMEZONE_ATTRIB, DEFAULT_DATE_FORMAT_TIMEZONE)
             .setIfUnset(STATS_UPDATE_FREQ_MS_ATTRIB, DEFAULT_STATS_UPDATE_FREQ_MS)
+            .setIfUnset(MIN_STATS_UPDATE_FREQ_MS_ATTRIB, DEFAULT_MIN_STATS_UPDATE_FREQ_MS)
             .setIfUnset(CALL_QUEUE_ROUND_ROBIN_ATTRIB, DEFAULT_CALL_QUEUE_ROUND_ROBIN)
             .setIfUnset(MAX_MUTATION_SIZE_ATTRIB, DEFAULT_MAX_MUTATION_SIZE)
             .setIfUnset(ROW_KEY_ORDER_SALTED_TABLE_ATTRIB, DEFAULT_FORCE_ROW_KEY_ORDER)
